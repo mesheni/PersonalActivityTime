@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Personal Activity Time",
+  "version": "1.0.0",
+  "description": "Локальная интеграция с Personal Activity Time: активная вкладка уходит в локальный трекер. Данные не покидают компьютер.",
+  "permissions": ["tabs", "nativeMessaging"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
