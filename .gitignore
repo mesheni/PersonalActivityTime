@@ -8,3 +8,5 @@ TestResults/
 *.db-shm
 *.db-wal
 .zcode/
+/docs/AUDIT-2026-11-02.md
+/docs/FIX-PLAN.md
