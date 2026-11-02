@@ -2,42 +2,40 @@ using System.IO;
 using System.Text;
 using Microsoft.Win32;
 using Pat.Core.Export;
+using Pat.Infrastructure;
 using Pat.Infrastructure.Database;
 
 namespace Pat.App.Services;
 
-/// <summary>
-/// Экспорт сессий за период в CSV или JSON через диалог сохранения.
-/// Формат строит Pat.Core.Export, здесь только выбор файла и запись (UTF-8 с BOM,
-/// чтобы Excel корректно открыл кириллицу).
-/// </summary>
 public sealed class ExportService(SessionMaterializer materializer)
 {
-    public void ExportRange(string filePrefix, long fromUtcMs, long toUtcMs)
+    public async Task<OperationResult> ExportAsync(long fromUtcMs, long toUtcMs, string rangeLabel)
     {
-        var rows = materializer.BuildRows(fromUtcMs, Math.Min(toUtcMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
-        var data = rows.Select(r => new ExportSession(
-            r.StartedUtcMs, r.EndedUtcMs,
-            r.AppName ?? "(исключено)", r.WindowTitle, r.Project,
-            r.CategoryName, r.IsIdle, r.IsExcluded)).ToList();
-
+        var from = DateTimeOffset.FromUnixTimeMilliseconds(fromUtcMs).ToLocalTime();
+        var to = DateTimeOffset.FromUnixTimeMilliseconds(toUtcMs - 1).ToLocalTime();
         var dialog = new SaveFileDialog
         {
-            Title = "Экспорт активности",
-            Filter = "CSV (Excel)|*.csv|JSON|*.json",
-            FilterIndex = 1,
-            FileName = $"{filePrefix}_{DateTime.Now:yyyy-MM-dd}.csv",
+            Title = "Экспорт активности · " + rangeLabel,
+            Filter = "CSV (Excel)|*.csv|JSON|*.json", FilterIndex = 1,
+            FileName = $"activity_{from:yyyy-MM-dd}_{to:yyyy-MM-dd}.csv",
         };
-        if (dialog.ShowDialog() != true)
-            return;
+        if (dialog.ShowDialog() != true) return new(OperationStatus.Cancelled, "Экспорт отменён.");
+        return await Task.Run(() => WriteRange(dialog.FileName, fromUtcMs, toUtcMs));
+    }
 
-        var content = dialog.FileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
-            ? ActivityExporter.ToJson(data)
-            : ActivityExporter.ToCsv(data);
-        File.WriteAllText(dialog.FileName, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-
-        System.Windows.MessageBox.Show(
-            $"Экспортировано сессий: {data.Count}\n{dialog.FileName}",
-            "Экспорт", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+    public OperationResult WriteRange(string path, long fromUtcMs, long toUtcMs)
+    {
+        try
+        {
+            var rows = materializer.BuildRows(fromUtcMs, Math.Min(toUtcMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+            var data = rows.Select(r => new ExportSession(r.StartedUtcMs, r.EndedUtcMs,
+                r.AppName ?? "(исключено)", r.WindowTitle, r.Project, r.CategoryName, r.IsIdle, r.IsExcluded)).ToList();
+            if (data.Count == 0) return new(OperationStatus.NoChanges, "За выбранный период нет сессий для экспорта.");
+            var content = path.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                ? ActivityExporter.ToJson(data) : ActivityExporter.ToCsv(data);
+            File.WriteAllText(path, content, new UTF8Encoding(true));
+            return new(OperationStatus.Success, $"Экспортировано сессий: {data.Count} · {path}", path);
+        }
+        catch (Exception ex) { return OperationResult.Failure(ex); }
     }
 }

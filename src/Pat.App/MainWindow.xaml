@@ -4,528 +4,238 @@
         xmlns:tb="clr-namespace:H.NotifyIcon;assembly=H.NotifyIcon.Wpf"
         xmlns:scott="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
         xmlns:pat="clr-namespace:Pat.App"
-        Title="Personal Activity Time — Сегодня"
-        Width="940" Height="780" MinWidth="760" MinHeight="600"
-        Background="{StaticResource BgBrush}"
-        WindowStartupLocation="CenterScreen">
-
+        Title="Personal Activity Time" Width="940" Height="780" MinWidth="760" MinHeight="600"
+        Background="{StaticResource BgBrush}" WindowStartupLocation="CenterScreen">
     <Window.Resources>
-        <pat:BarWidthConverter x:Key="BarWidthConverter"/>
-        <pat:EmptyListToVisibilityConverter x:Key="EmptyToVisible"/>
-        <pat:NonEmptyStringToVisibilityConverter x:Key="NonEmptyToVisible"/>
+        <BooleanToVisibilityConverter x:Key="BoolVisible"/>
+        <pat:NonEmptyStringToVisibilityConverter x:Key="TextVisible"/>
         <pat:InverseBoolConverter x:Key="InverseBool"/>
+        <pat:InverseVisibilityConverter x:Key="InverseVisible"/>
+        <DataTemplate x:Key="TotalTemplate">
+            <Grid Margin="0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Border Width="10" Height="10" CornerRadius="2" Background="{Binding Color}" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}" Margin="0,0,12,0"/>
+                <TextBlock Grid.Column="2" Text="{Binding Time}" FontWeight="SemiBold"/>
+            </Grid>
+        </DataTemplate>
     </Window.Resources>
-
     <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
-
-        <!-- Шапка -->
-        <Border Grid.Row="0" Background="{StaticResource CardBrush}" Padding="20,14">
-            <DockPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Content="{Binding PauseLabel}" Command="{Binding TogglePauseCommand}" MinWidth="110"/>
-                    <Button Content="Обновить" Command="{Binding RefreshCommand}" Margin="8,0,0,0"/>
-                    <Button Content="Экспорт дня" Command="{Binding ExportDayCommand}" Margin="8,0,0,0"
-                            ToolTip="Сохранить сессии сегодняшнего дня в CSV или JSON"/>
-                </StackPanel>
-                <StackPanel Orientation="Vertical">
-                    <TextBlock Text="{Binding DateLabel}" FontSize="20" FontWeight="SemiBold"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                        <TextBlock Text="Активно"/>
-                        <TextBlock Text="{Binding ActiveLabel}" Foreground="{StaticResource AccentBrush}"
-                                   FontWeight="SemiBold" Margin="6,0,0,0"/>
-                        <TextBlock Text="· Простой" Margin="14,0,0,0" Foreground="{StaticResource DimBrush}"/>
-                        <TextBlock Text="{Binding IdleLabel}" Foreground="{StaticResource DimBrush}" Margin="6,0,0,0"/>
-                    </StackPanel>
-                </StackPanel>
-            </DockPanel>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Border Background="{StaticResource CardBrush}" Padding="20,12">
+            <StackPanel>
+                <DockPanel LastChildFill="False">
+                    <TextBlock Text="Personal Activity Time" FontSize="18" FontWeight="SemiBold"/>
+                    <Button DockPanel.Dock="Right" Content="Выйти" Click="MenuItem_Exit" Padding="12,4"/>
+                </DockPanel>
+                <TextBlock Text="{Binding TrackingLabel}" Foreground="#93C5FD" TextWrapping="Wrap" Margin="0,6,0,4" AutomationProperties.LiveSetting="Polite"/>
+                <WrapPanel>
+                    <Button Content="{Binding PauseLabel}" Command="{Binding TogglePauseCommand}"/>
+                    <Button Content="Обновить" Command="{Binding RefreshCommand}"/>
+                    <Button Content="Экспорт" Command="{Binding ExportCommand}" ToolTip="Выбранный день или загруженный период"/>
+                </WrapPanel>
+            </StackPanel>
         </Border>
-
-        <TabControl Grid.Row="1" Background="Transparent" BorderThickness="0" Margin="20,10,20,10"
-                    SelectionChanged="TabControl_SelectionChanged">
-
-            <!-- ==================== Сегодня ==================== -->
-            <TabItem Header="Сегодня">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel>
-
-                        <!-- Таймлайн суток -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <TextBlock Text="Таймлайн" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10"/>
-
-                                <ItemsControl ItemsSource="{Binding TimelineItems}">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <Canvas Height="34" ClipToBounds="True" Background="#20232B"
-                                                    Loaded="TimelineCanvas_Loaded" SizeChanged="TimelineCanvas_SizeChanged"/>
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Rectangle Canvas.Left="{Binding Left}" Canvas.Top="5"
-                                                       Width="{Binding Width}" Height="24" RadiusX="2" RadiusY="2"
-                                                       Fill="{Binding Fill}" ToolTip="{Binding Tooltip}"/>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-
-                                <ItemsControl ItemsSource="{Binding HourTicks}" Margin="0,6,0,0">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <Canvas Height="16"/>
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Canvas.Left="{Binding Left}" Canvas.Top="0"
-                                                       Text="{Binding Label}" FontSize="10"
-                                                       Foreground="{StaticResource DimBrush}"/>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Категории -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <TextBlock Text="Категории" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                                <ItemsControl ItemsSource="{Binding Categories}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Margin="0,0,0,8">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="18"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <Border Width="12" Height="12" CornerRadius="3"
-                                                        Background="{Binding Color}" VerticalAlignment="Center"/>
-                                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,12,0">
-                                                    <TextBlock Text="{Binding Name}"/>
-                                                    <Border Height="5" CornerRadius="2" Margin="0,3,0,0"
-                                                            Background="#2C303C" HorizontalAlignment="Left">
-                                                        <Border.Width>
-                                                            <MultiBinding Converter="{StaticResource BarWidthConverter}">
-                                                                <Binding Path="BarFraction"/>
-                                                                <Binding Path="ActualWidth" RelativeSource="{RelativeSource AncestorType=Grid}"/>
-                                                            </MultiBinding>
-                                                        </Border.Width>
-                                                    </Border>
-                                                </StackPanel>
-                                                <TextBlock Grid.Column="2" Text="{Binding Time}" FontWeight="SemiBold"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <TextBlock Text="Пока пусто — данные появятся через минуту работы"
-                                           Style="{StaticResource DimText}"
-                                           Visibility="{Binding Categories, Converter={StaticResource EmptyToVisible}}"/>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Приложения -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <TextBlock Text="Приложения" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                                <ItemsControl ItemsSource="{Binding Apps}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Margin="0,0,0,8">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="18"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <Border Width="12" Height="12" CornerRadius="3"
-                                                        Background="{Binding Color}" VerticalAlignment="Center"/>
-                                                <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center"/>
-                                                <TextBlock Grid.Column="2" Text="{Binding Time}" FontWeight="SemiBold"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Система: CPU / RAM за день -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <TextBlock Text="Система — CPU / RAM, %" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                                <scott:WpfPlot x:Name="TodayMetricsPlot" Height="170"/>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Процессы -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <DockPanel Margin="0,0,0,10">
-                                    <TextBlock Text="Процессы" FontSize="14" FontWeight="SemiBold"/>
-                                    <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right"
-                                               Style="{StaticResource DimText}">
-                                        <Run Text="запусков сегодня: "/>
-                                        <Run Text="{Binding ProcessStartsToday, Mode=OneWay}" FontWeight="SemiBold"/>
-                                    </TextBlock>
-                                </DockPanel>
-                                <ItemsControl ItemsSource="{Binding ProcessEvents}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Margin="0,0,0,4">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="70"/>
-                                                    <ColumnDefinition Width="110"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="{Binding Time}" Style="{StaticResource DimText}"/>
-                                                <TextBlock Grid.Column="1" Text="{Binding Action}"
-                                                           Foreground="{Binding ActionBrush}"/>
-                                                <TextBlock Grid.Column="2" Text="{Binding Name}"/>
-                                                <TextBlock Grid.Column="3" Text="{Binding Parent}"
-                                                           Style="{StaticResource DimText}"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <TextBlock Text="Наблюдение процессов запущено — события появятся через несколько секунд"
-                                           Style="{StaticResource DimText}"
-                                           Visibility="{Binding ProcessEvents, Converter={StaticResource EmptyToVisible}}"/>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Файлы -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <DockPanel Margin="0,0,0,10">
-                                    <TextBlock Text="Файлы" FontSize="14" FontWeight="SemiBold"/>
-                                    <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right"
-                                               Text="{Binding FileCountsLabel}" Style="{StaticResource DimText}"/>
-                                </DockPanel>
-
-                                <TextBlock Text="Каталоги с наибольшей активностью" Style="{StaticResource DimText}" Margin="0,0,0,6"/>
-                                <ItemsControl ItemsSource="{Binding FileTopDirs}" Margin="0,0,0,10">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Margin="0,0,0,4">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"
-                                                           ToolTip="{Binding Name}" VerticalAlignment="Center"/>
-                                                <TextBlock Grid.Column="1" Text="{Binding Time}"
-                                                           FontWeight="SemiBold" Margin="10,0,0,0"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-
-                                <ItemsControl ItemsSource="{Binding FileEvents}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Margin="0,0,0,4" ToolTip="{Binding FullPath}">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="70"/>
-                                                    <ColumnDefinition Width="120"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="{Binding Time}" Style="{StaticResource DimText}"/>
-                                                <TextBlock Grid.Column="1" Text="{Binding Action}"
-                                                           Foreground="{Binding ActionBrush}"/>
-                                                <TextBlock Grid.Column="2" Text="{Binding FileName}"
-                                                           TextTrimming="CharacterEllipsis"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Браузер -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <TextBlock Text="Браузер" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10"/>
-
-                                <TextBlock Text="Домены сегодня" Style="{StaticResource DimText}" Margin="0,0,0,6"/>
-                                <ItemsControl ItemsSource="{Binding TopDomains}" Margin="0,0,0,10">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <WrapPanel Orientation="Horizontal"/>
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Background="#2C303C" CornerRadius="6" Padding="8,3" Margin="0,0,8,4">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <Ellipse Width="7" Height="7" Fill="{Binding Color}"
-                                                             VerticalAlignment="Center"/>
-                                                    <TextBlock Text="{Binding Name}" Margin="6,0,0,0"/>
-                                                    <TextBlock Text="{Binding Time}" Margin="6,0,0,0"
-                                                               Foreground="{StaticResource DimBrush}"/>
-                                                </StackPanel>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-
-                                <ItemsControl ItemsSource="{Binding BrowserVisits}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Margin="0,0,0,4" ToolTip="{Binding Url}">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="70"/>
-                                                    <ColumnDefinition Width="170"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="{Binding Time}" Style="{StaticResource DimText}"/>
-                                                <TextBlock Grid.Column="1" Text="{Binding Domain}"
-                                                           FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                                <TextBlock Grid.Column="2" Text="{Binding Title}"
-                                                           Style="{StaticResource DimText}" TextTrimming="CharacterEllipsis"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <TextBlock Text="Нет визитов — установите расширение из папки extension/ (см. extension/README.md)"
-                                           Style="{StaticResource DimText}"
-                                           Visibility="{Binding BrowserVisits, Converter={StaticResource EmptyToVisible}}"/>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Настройки -->
-                        <Expander Header="Настройки" Foreground="{StaticResource TextBrush}" Background="Transparent">
-                            <Border Style="{StaticResource Card}" Margin="0,10,0,0">
-                                <StackPanel>
-                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                                        <TextBlock Text="Порог простоя:" VerticalAlignment="Center"/>
-                                        <ComboBox Width="100" Margin="8,0,0,0"
-                                                  SelectedValuePath="Tag" SelectedValue="{Binding IdleThresholdMinutes}"
-                                                  VerticalContentAlignment="Center">
-                                            <ComboBoxItem Content="1 мин" Tag="1"/>
-                                            <ComboBoxItem Content="3 мин" Tag="3"/>
-                                            <ComboBoxItem Content="5 мин" Tag="5"/>
-                                            <ComboBoxItem Content="10 мин" Tag="10"/>
-                                            <ComboBoxItem Content="15 мин" Tag="15"/>
-                                            <ComboBoxItem Content="30 мин" Tag="30"/>
-                                        </ComboBox>
-                                        <TextBlock Text="без ввода — считается простоем" Style="{StaticResource DimText}"
-                                                   VerticalAlignment="Center" Margin="10,0,0,0"/>
-                                    </StackPanel>
-
-                                    <TextBlock Text="Исключённые процессы (имя exe, по одному в строке):" Margin="0,0,0,4"/>
-                                    <TextBox Text="{Binding ExcludedText, UpdateSourceTrigger=PropertyChanged}"
-                                             AcceptsReturn="True" Height="80" Margin="0,0,0,10"
-                                             Background="#1E212A" Foreground="{StaticResource TextBrush}"
-                                             BorderBrush="{StaticResource LineBrush}" VerticalScrollBarVisibility="Auto"/>
-
-                                    <TextBlock Text="Папки для наблюдения за файлами (полный путь, по одной в строке; служебные каталоги bin/obj/node_modules/.git и временные файлы игнорируются):" Margin="0,0,0,4"/>
-                                    <TextBox Text="{Binding WatchedRootsText, UpdateSourceTrigger=PropertyChanged}"
-                                             AcceptsReturn="True" Height="70" Margin="0,0,0,12"
-                                             Background="#1E212A" Foreground="{StaticResource TextBrush}"
-                                             BorderBrush="{StaticResource LineBrush}" VerticalScrollBarVisibility="Auto"/>
-
-                                    <TextBlock Text="Интеграция с браузером (Chrome/Edge):" Margin="0,0,0,4"/>
-                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                                        <TextBox Text="{Binding ExtensionId, UpdateSourceTrigger=PropertyChanged}"
-                                                 Width="260" Background="#1E212A" Foreground="{StaticResource TextBrush}"
-                                                 BorderBrush="{StaticResource LineBrush}"
-                                                 ToolTip="ID расширения из chrome://extensions (32 буквы)"/>
-                                        <Button Content="Установить" Command="{Binding InstallBrowserIntegrationCommand}" Margin="8,0,0,0"/>
-                                        <Button Content="Удалить" Command="{Binding UninstallBrowserIntegrationCommand}" Margin="8,0,0,0"/>
-                                    </StackPanel>
-                                    <TextBlock Style="{StaticResource DimText}" Margin="0,0,0,12"
-                                               Text="1) chrome://extensions → режим разработчика → «Загрузить распакованное» → папка extension/ из репозитория. 2) Скопировать ID. 3) Вставить сюда и нажать «Установить». 4) Перезапустить браузер."/>
-
-                                    <CheckBox Content="Запускать при входе в Windows"
-                                              IsChecked="{Binding AutoStartEnabled}" Margin="0,0,0,12"/>
-
-                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                                        <TextBlock Text="Хранить данные:" VerticalAlignment="Center"/>
-                                        <ComboBox Width="110" Margin="8,0,0,0"
-                                                  SelectedValuePath="Tag" SelectedValue="{Binding RetentionDays}"
-                                                  VerticalContentAlignment="Center"
-                                                  ToolTip="Журнал и сессии старше срока удаляются автоматически">
-                                            <ComboBoxItem Content="30 дней" Tag="30"/>
-                                            <ComboBoxItem Content="90 дней" Tag="90"/>
-                                            <ComboBoxItem Content="180 дней" Tag="180"/>
-                                            <ComboBoxItem Content="1 год" Tag="365"/>
-                                            <ComboBoxItem Content="вечно" Tag="0"/>
-                                        </ComboBox>
-                                        <Button Content="Очистить старые данные" Command="{Binding PurgeOldDataCommand}"
-                                                Margin="16,0,0,0"/>
-                                    </StackPanel>
-
-                                    <Button Content="Сохранить" Command="{Binding SaveSettingsCommand}"
-                                            HorizontalAlignment="Left"/>
-                                </StackPanel>
-                            </Border>
-                        </Expander>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <!-- ==================== Отчёт ==================== -->
-            <TabItem Header="Отчёт" x:Name="ReportTab">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel x:Name="ReportRoot">
-
-                        <!-- Хроника дня -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <TextBlock Text="Что я сегодня делал" FontSize="14" FontWeight="SemiBold"/>
-                                <TextBlock Text="{Binding Headline}" Style="{StaticResource DimText}" Margin="0,3,0,12"/>
-                                <ItemsControl ItemsSource="{Binding Blocks}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Margin="0,0,0,10">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="18"/>
-                                                    <ColumnDefinition Width="110"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                </Grid.ColumnDefinitions>
-                                                <Border Width="10" Height="10" CornerRadius="2"
-                                                        Background="{Binding Color}" VerticalAlignment="Top" Margin="0,4,0,0"/>
-                                                <StackPanel Grid.Column="1" VerticalAlignment="Top">
-                                                    <TextBlock Text="{Binding TimeRange}" FontWeight="SemiBold"/>
-                                                    <TextBlock Text="{Binding Duration}" Style="{StaticResource DimText}" Margin="0,1,0,0"/>
-                                                </StackPanel>
-                                                <StackPanel Grid.Column="2" VerticalAlignment="Top" Margin="0,0,0,0">
-                                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                                                    <TextBlock Text="{Binding Details}" Style="{StaticResource DimText}"
-                                                               TextWrapping="Wrap" Margin="0,2,0,0"/>
-                                                </StackPanel>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <TextBlock Text="Отрезки — это реконструкция контекста: соседняя активность с разрывом до 4 минут считается одним занятием"
-                                           Style="{StaticResource DimText}" TextWrapping="Wrap" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Локальная LLM -->
+        <StackPanel Grid.Row="1" Margin="20,8,20,0">
+            <WrapPanel Visibility="{Binding DataContext.ShowsDay, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolVisible}}" DataContext="{Binding Day}">
+                <Button Content="←" Command="{Binding PreviousDayCommand}" AutomationProperties.Name="Предыдущий день"/>
+                <DatePicker SelectedDate="{Binding SelectedDate}" DisplayDateEnd="{Binding Today, Mode=OneWay}" Width="145" Margin="0,3,8,3"
+                            VerticalContentAlignment="Center" AutomationProperties.Name="Дата обзора и журнала"/>
+                <Button Content="→" Command="{Binding NextDayCommand}" AutomationProperties.Name="Следующий день"/>
+                <Button Content="Сегодня" Command="{Binding GoTodayCommand}"/>
+            </WrapPanel>
+            <TextBlock Text="{Binding OperationStatus}" TextWrapping="Wrap" Foreground="#FBBF24" Margin="0,4"
+                       Visibility="{Binding OperationStatus, Converter={StaticResource TextVisible}}" AutomationProperties.LiveSetting="Polite"/>
+        </StackPanel>
+        <TabControl x:Name="Sections" Grid.Row="2" SelectedIndex="{Binding SelectedSection}" Margin="20,8,20,12">
+            <TabItem Header="Обзор">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel DataContext="{Binding Overview}">
+                        <ProgressBar IsIndeterminate="True" Height="3" Visibility="{Binding IsLoading, Converter={StaticResource BoolVisible}}"/>
+                        <TextBlock Text="{Binding Status}" Style="{StaticResource DimText}" Margin="0,6,0,10" AutomationProperties.LiveSetting="Polite"/>
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
-                                <DockPanel Margin="0,0,0,10">
-                                    <CheckBox DockPanel.Dock="Right" Content="Включить" VerticalAlignment="Center"
-                                              IsChecked="{Binding OllamaEnabled}"/>
-                                    <TextBlock Text="Локальная LLM (Ollama)" FontSize="14" FontWeight="SemiBold"/>
-                                </DockPanel>
-                                <TextBlock Style="{StaticResource DimText}" TextWrapping="Wrap" Margin="0,0,0,10"
-                                           Text="Вопрос обрабатывает локальная модель на вашем компьютере — данные никуда не отправляются. Модель видит агрегированную статистику дня, а не сырые события."/>
-
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="Сервер:" VerticalAlignment="Center"/>
-                                    <TextBox Text="{Binding OllamaHost, UpdateSourceTrigger=PropertyChanged}"
-                                             Width="220" Margin="8,0,0,0" Background="#1E212A"
-                                             Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource LineBrush}"/>
-                                    <TextBlock Text="Модель:" VerticalAlignment="Center" Margin="16,0,0,0"/>
-                                    <TextBox Text="{Binding OllamaModel, UpdateSourceTrigger=PropertyChanged}"
-                                             Width="160" Margin="8,0,0,0" Background="#1E212A"
-                                             Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource LineBrush}"/>
-                                    <Button Content="Проверить" Command="{Binding CheckOllamaAsyncCommand}" Margin="8,0,0,0"/>
-                                    <Button Content="Сохранить" Command="{Binding SaveOllamaSettingsCommand}" Margin="8,0,0,0"/>
-                                </StackPanel>
-                                <TextBlock Text="{Binding OllamaStatus}" Style="{StaticResource DimText}" TextWrapping="Wrap" Margin="0,0,0,10"/>
-
-                                <TextBlock Text="Свой вопрос (необязательно):" Margin="0,0,0,4"/>
-                                <TextBox Text="{Binding Question, UpdateSourceTrigger=PropertyChanged}"
-                                         Background="#1E212A" Foreground="{StaticResource TextBrush}"
-                                         BorderBrush="{StaticResource LineBrush}" Margin="0,0,0,10"/>
-
-                                <Button Content="Что я сегодня делал?" Command="{Binding AskAsyncCommand}"
-                                        HorizontalAlignment="Left" MinWidth="180"
-                                        IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"/>
-
-                                <TextBox Text="{Binding LlmAnswer, Mode=OneWay}" IsReadOnly="True"
-                                         AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="360"
-                                         VerticalScrollBarVisibility="Auto" Margin="0,10,0,0"
-                                         Background="#1E212A" Foreground="{StaticResource TextBrush}"
-                                         BorderBrush="{StaticResource LineBrush}"
-                                         Visibility="{Binding LlmAnswer, Converter={StaticResource NonEmptyToVisible}}"/>
+                                <WrapPanel><TextBlock Text="Активно  " FontSize="16"/><TextBlock Text="{Binding ActiveLabel}" FontSize="24" FontWeight="SemiBold" Foreground="#93C5FD"/>
+                                    <TextBlock Text="   Простой  " VerticalAlignment="Center"/><TextBlock Text="{Binding IdleLabel}" VerticalAlignment="Center" FontSize="18"/></WrapPanel>
+                                <TextBlock Text="{Binding Headline}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                             </StackPanel>
                         </Border>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <!-- ==================== Статистика ==================== -->
-            <TabItem Header="Статистика" x:Name="StatsTab">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel x:Name="StatsRoot">
-
-                        <!-- Активность по дням -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+                        <Border Style="{StaticResource Card}">
                             <StackPanel>
-                                <DockPanel Margin="0,0,0,10">
-                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                        <Button Content="Неделя" Command="{Binding SetRangeWeekCommand}" MinWidth="80"/>
-                                        <Button Content="Месяц" Command="{Binding SetRangeMonthCommand}" MinWidth="80" Margin="8,0,0,0"/>
-                                        <Button Content="Экспорт периода" Command="{Binding ExportPeriodCommand}" Margin="8,0,0,0"
-                                                ToolTip="Сохранить сессии периода в CSV или JSON"/>
-                                    </StackPanel>
-                                    <StackPanel Orientation="Vertical">
-                                        <TextBlock Text="Активность по дням, ч" FontSize="14" FontWeight="SemiBold"/>
-                                        <TextBlock Text="{Binding ActiveSummary}" Style="{StaticResource DimText}" Margin="0,2,0,0"/>
-                                    </StackPanel>
-                                </DockPanel>
-                                <scott:WpfPlot x:Name="DailyActivityPlot" Height="280"/>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- CPU / RAM за период -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <TextBlock Text="CPU / RAM за период, %" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                                <scott:WpfPlot x:Name="RangeMetricsPlot" Height="190"/>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Категории за период -->
-                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
-                            <StackPanel>
-                                <TextBlock Text="Категории за период" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                                <ItemsControl ItemsSource="{Binding Categories}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Margin="0,0,0,8">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="18"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <Border Width="12" Height="12" CornerRadius="3"
-                                                        Background="{Binding Color}" VerticalAlignment="Center"/>
-                                                <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center"/>
-                                                <TextBlock Grid.Column="2" Text="{Binding Time}" FontWeight="SemiBold"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
+                                <TextBlock Text="Хронология занятий" Style="{StaticResource Heading}"/>
+                                <TextBlock Text="Реконструкция контекста: соседняя активность с разрывом до 4 минут объединяется в занятие." Style="{StaticResource DimText}" Margin="0,0,0,8"/>
+                                <ItemsControl ItemsSource="{Binding Blocks}">
+                                    <ItemsControl.ItemTemplate><DataTemplate>
+                                        <Grid Margin="0,7">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <StackPanel><TextBlock Text="{Binding TimeRange}" FontWeight="SemiBold"/><TextBlock Text="{Binding Duration}" Style="{StaticResource DimText}"/></StackPanel>
+                                            <StackPanel Grid.Column="1"><TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding Details}" Style="{StaticResource DimText}"/></StackPanel>
+                                        </Grid>
+                                    </DataTemplate></ItemsControl.ItemTemplate>
                                 </ItemsControl>
                             </StackPanel>
                         </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="Таймлайн дня" Style="{StaticResource Heading}"/>
+                                <ItemsControl ItemsSource="{Binding TimelineItems}">
+                                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas Height="34" ClipToBounds="True" Background="#111318" Loaded="TimelineCanvas_Loaded" SizeChanged="TimelineCanvas_SizeChanged"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemContainerStyle><Style TargetType="ContentPresenter"><Setter Property="Canvas.Left" Value="{Binding Left}"/><Setter Property="Canvas.Top" Value="4"/></Style></ItemsControl.ItemContainerStyle>
+                                    <ItemsControl.ItemTemplate><DataTemplate>
+                                        <Button Width="{Binding Width}" Height="26" Padding="0" Margin="0" Background="{Binding Fill}" ToolTip="{Binding Tooltip}"
+                                                Command="{Binding DataContext.SelectSegmentCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}" Focusable="False" IsTabStop="False" AutomationProperties.Name="{Binding Tooltip}"/>
+                                    </DataTemplate></ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <ItemsControl ItemsSource="{Binding HourTicks}" Margin="0,4,0,8">
+                                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas Height="20" ClipToBounds="True"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemContainerStyle><Style TargetType="ContentPresenter"><Setter Property="Canvas.Left" Value="{Binding Left}"/></Style></ItemsControl.ItemContainerStyle>
+                                    <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" FontSize="11" Foreground="{StaticResource DimBrush}"/></DataTemplate></ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="Цвет категории — активность · серый — простой · тёмно-серый — исключено · чёрный фон — нет записи" Style="{StaticResource DimText}"/>
+                                <Expander Header="Интервалы и подробности (доступны с клавиатуры)" Margin="0,10,0,0">
+                                    <StackPanel>
+                                        <ListBox ItemsSource="{Binding Intervals}" SelectedItem="{Binding SelectedInterval}" MaxHeight="200" Margin="0,8"
+                                                 ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                                                 AutomationProperties.Name="Интервалы дня">
+                                            <ListBox.ItemTemplate><DataTemplate><TextBlock TextWrapping="Wrap"><Run Text="{Binding TimeRange}"/><Run Text="  "/><Run Text="{Binding App}"/><Run Text=" · "/><Run Text="{Binding Duration}"/></TextBlock></DataTemplate></ListBox.ItemTemplate>
+                                        </ListBox>
+                                        <TextBox Text="{Binding SelectedInterval.Details, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="60" AutomationProperties.Name="Подробности интервала"/>
+                                    </StackPanel>
+                                </Expander>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Категории" Style="{StaticResource Heading}"/><ItemsControl ItemsSource="{Binding Categories}" ItemTemplate="{StaticResource TotalTemplate}"/></StackPanel></Border>
+                        <Border Style="{StaticResource Card}"><StackPanel>
+                            <TextBlock Text="{Binding AppsLabel}" Style="{StaticResource Heading}"/>
+                            <CheckBox Content="Показать все приложения" IsChecked="{Binding ShowAllApps}" Margin="0,0,0,4"/>
+                            <ItemsControl ItemsSource="{Binding Apps}" ItemTemplate="{StaticResource TotalTemplate}"/>
+                        </StackPanel></Border>
+                        <Border Style="{StaticResource Card}" DataContext="{Binding DataContext.Assistant, RelativeSource={RelativeSource AncestorType=Window}}">
+                            <StackPanel>
+                                <TextBlock Text="Вопрос о выбранном дне · Ollama" Style="{StaticResource Heading}"/>
+                                <TextBlock Text="Настройте локальную модель в разделе «Настройки». Без Ollama хронология и статистика работают полностью." Style="{StaticResource DimText}"/>
+                                <Label Content="Вопрос (можно оставить пустым)" Target="{Binding ElementName=QuestionInput}"/>
+                                <TextBox x:Name="QuestionInput" Text="{Binding Question, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Вопрос модели о выбранном дне"/>
+                                <WrapPanel Margin="0,6"><Button Content="Спросить / повторить" Command="{Binding AskCommand}"/><Button Content="Отменить запрос" Command="{Binding AskCancelCommand}"/></WrapPanel>
+                                <ProgressBar IsIndeterminate="True" Height="3" Visibility="{Binding IsBusy, Converter={StaticResource BoolVisible}}"/>
+                                <TextBlock Text="{Binding Status}" Style="{StaticResource DimText}" Margin="0,4" AutomationProperties.LiveSetting="Polite"/>
+                                <TextBox Text="{Binding LlmAnswer, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="360" VerticalScrollBarVisibility="Auto"
+                                         Visibility="{Binding LlmAnswer, Converter={StaticResource TextVisible}}" AutomationProperties.Name="Ответ модели"/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
+            <TabItem Header="Журнал">
+                <Grid DataContext="{Binding Journal}">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <StackPanel>
+                        <WrapPanel Margin="0,8">
+                            <ComboBox SelectedIndex="{Binding Group}" Width="170" AutomationProperties.Name="Раздел журнала">
+                                <ComboBoxItem Content="Все события"/><ComboBoxItem Content="Процессы"/><ComboBoxItem Content="Файлы"/><ComboBoxItem Content="Браузер"/><ComboBoxItem Content="CPU / RAM"/>
+                            </ComboBox>
+                            <TextBox Text="{Binding Search, UpdateSourceTrigger=PropertyChanged}" Width="230" Margin="8,0" ToolTip="Поиск по отображаемым полям" AutomationProperties.Name="Поиск в журнале" IsEnabled="{Binding IsMetrics, Converter={StaticResource InverseBool}}"/>
+                            <ComboBox ItemsSource="{Binding EventFilters}" DisplayMemberPath="Name" SelectedValuePath="Kind" SelectedValue="{Binding EventKind}" Width="190" AutomationProperties.Name="Тип события" IsEnabled="{Binding IsMetrics, Converter={StaticResource InverseBool}}"/>
+                        </WrapPanel>
+                        <TextBlock Text="{Binding IntegrationStatus}" Style="{StaticResource DimText}"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Margin="0,4,0,8"><TextBlock Text="{Binding Status}" Style="{StaticResource DimText}" AutomationProperties.LiveSetting="Polite"/>
+                        <ProgressBar IsIndeterminate="True" Height="3" Visibility="{Binding IsLoading, Converter={StaticResource BoolVisible}}"/></StackPanel>
+                    <Grid Grid.Row="2">
+                        <ListView ItemsSource="{Binding Entries}" SelectedItem="{Binding SelectedEntry}" Visibility="{Binding IsMetrics, Converter={StaticResource InverseVisible}}"
+                                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="События журнала">
+                            <ListView.ItemTemplate><DataTemplate><Grid Margin="0,5"><Grid.ColumnDefinitions><ColumnDefinition Width="76"/><ColumnDefinition Width="116"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding Time}" Style="{StaticResource DimText}"/><TextBlock Grid.Column="1" Text="{Binding Action}"/>
+                                <TextBlock Grid.Column="2" Text="{Binding Name}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
+                            </Grid></DataTemplate></ListView.ItemTemplate>
+                        </ListView>
+                        <StackPanel Visibility="{Binding IsMetrics, Converter={StaticResource BoolVisible}}">
+                            <TextBlock Text="{Binding MetricsStatus}" Style="{StaticResource DimText}"/>
+                            <scott:WpfPlot x:Name="TodayMetricsPlot" Height="260" AutomationProperties.Name="График CPU и RAM"/>
+                        </StackPanel>
+                    </Grid>
+                    <StackPanel Grid.Row="3" Margin="0,8,0,0">
+                        <Button Content="Загрузить ещё 100" Command="{Binding LoadMoreCommand}" HorizontalAlignment="Left" Visibility="{Binding HasMore, Converter={StaticResource BoolVisible}}"/>
+                        <TextBox x:Name="JournalDetails" Text="{Binding SelectedEntry.FullDetails, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" MaxHeight="120" MinHeight="50" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Подробности выбранного события"/>
+                        <Button Content="Копировать подробности" Click="CopyJournalDetails" HorizontalAlignment="Left"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Статистика">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel DataContext="{Binding Stats}">
+                    <WrapPanel Margin="0,8"><Button Content="7 дней" Command="{Binding SetRangeWeekCommand}"/><Button Content="30 дней" Command="{Binding SetRangeMonthCommand}"/><TextBlock Text="{Binding RangeLabel}" VerticalAlignment="Center" TextWrapping="Wrap"/></WrapPanel>
+                    <TextBlock Text="{Binding Status}" Style="{StaticResource DimText}" AutomationProperties.LiveSetting="Polite"/>
+                    <ProgressBar IsIndeterminate="True" Height="3" Visibility="{Binding IsLoading, Converter={StaticResource BoolVisible}}"/>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="{Binding ActiveSummary}" Style="{StaticResource Heading}"/>
+                        <TextBlock Text="Дважды нажмите на день графика или выберите день из списка ниже." Style="{StaticResource DimText}"/>
+                        <scott:WpfPlot x:Name="DailyActivityPlot" Height="280" MouseDoubleClick="DailyPlot_OpenDay" AutomationProperties.Name="Активность по дням; двойное нажатие открывает обзор"/>
+                    </StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Категории за период" Style="{StaticResource Heading}"/><ItemsControl ItemsSource="{Binding Categories}" ItemTemplate="{StaticResource TotalTemplate}"/></StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="CPU / RAM за период, %" Style="{StaticResource Heading}"/><scott:WpfPlot x:Name="RangeMetricsPlot" Height="190"/>
+                        <TextBlock Text="Без измерений график остаётся пустым; значения не считаются нулевыми." Style="{StaticResource DimText}"/></StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Перейти к дню" Style="{StaticResource Heading}"/>
+                        <ItemsControl ItemsSource="{Binding DaySummaries}"><ItemsControl.ItemTemplate><DataTemplate>
+                            <Button Command="{Binding DataContext.OpenDayCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding}" HorizontalContentAlignment="Left">
+                                <TextBlock><Run Text="{Binding Date, StringFormat=dd.MM.yyyy}"/><Run Text=" · активно "/><Run Text="{Binding Active}"/><Run Text=" · простой "/><Run Text="{Binding Idle}"/></TextBlock>
+                            </Button>
+                        </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                    </StackPanel></Border>
+                </StackPanel></ScrollViewer>
+            </TabItem>
+            <TabItem Header="Настройки">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel DataContext="{Binding Settings}">
+                    <StackPanel Margin="0,8"><TextBlock Text="{Binding DirtyLabel}" FontWeight="SemiBold"/><TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,4" AutomationProperties.LiveSetting="Polite"/>
+                        <WrapPanel IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"><Button Content="Сохранить" Command="{Binding SaveCommand}"/><Button Content="Отменить изменения" Command="{Binding ResetCommand}"/></WrapPanel>
+                        <TextBlock Text="{Binding GeneralError}" Style="{StaticResource ErrorText}"/>
+                    </StackPanel>
+                    <StackPanel IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}">
+                        <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Учёт активности" Style="{StaticResource Heading}"/>
+                            <Label Content="Минут без ввода до простоя (1–1440)" Target="{Binding ElementName=IdleInput}"/>
+                            <TextBox x:Name="IdleInput" Text="{Binding IdleThresholdMinutes, UpdateSourceTrigger=PropertyChanged}" Width="110" HorizontalAlignment="Left" AutomationProperties.Name="Минут без ввода до простоя"/>
+                            <CheckBox Content="Запускать при входе в Windows" IsChecked="{Binding AutoStartEnabled}" Margin="0,12"/>
+                            <Label Content="Папки для наблюдения (по одной в строке)" Target="{Binding ElementName=RootsInput}"/>
+                            <TextBox x:Name="RootsInput" Text="{Binding WatchedRootsText, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" Height="80" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Папки для наблюдения"/>
+                            <TextBlock Text="{Binding RootsError}" Style="{StaticResource ErrorText}"/>
+                            <Button Content="Добавить папку…" Command="{Binding AddFolderCommand}" HorizontalAlignment="Left"/>
+                            <TextBlock Text="Служебные папки bin, obj, node_modules, .git и временные файлы игнорируются." Style="{StaticResource DimText}"/>
+                        </StackPanel></Border>
+                        <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Конфиденциальность и хранение" Style="{StaticResource Heading}"/>
+                            <TextBlock Text="Журнал хранится на этом компьютере. Нажатия клавиш не записываются. Исключения не сохраняют имена и заголовки окон." Style="{StaticResource DimText}"/>
+                            <Label Content="Исключённые процессы, по одному в строке (например keepass.exe)" Target="{Binding ElementName=ExclusionsInput}"/>
+                            <TextBox x:Name="ExclusionsInput" Text="{Binding ExcludedText, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" Height="80" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Исключённые процессы"/>
+                            <Label Content="Хранить данные, дней (0 — бессрочно)" Target="{Binding ElementName=RetentionInput}"/>
+                            <TextBox x:Name="RetentionInput" Text="{Binding RetentionDays, UpdateSourceTrigger=PropertyChanged}" Width="110" HorizontalAlignment="Left" AutomationProperties.Name="Срок хранения в днях"/>
+                            <Button Content="Очистить старые данные…" Command="{Binding PurgeCommand}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+                            <TextBlock Text="Очистка использует сохранённый срок хранения и требует подтверждения. Данные старше срока удаляются автоматически." Style="{StaticResource DimText}"/>
+                        </StackPanel></Border>
+                        <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Браузер · Chrome / Edge" Style="{StaticResource Heading}"/>
+                            <TextBlock Text="1. Откройте страницу расширений браузера, включите режим разработчика и загрузите папку extension из дистрибутива. 2. Скопируйте ID расширения. 3. Зарегистрируйте хост и перезапустите браузер." Style="{StaticResource DimText}"/>
+                            <Label Content="ID расширения (32 буквы a–p)" Target="{Binding ElementName=ExtensionInput}"/>
+                            <TextBox x:Name="ExtensionInput" Text="{Binding ExtensionId, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="ID расширения"/>
+                            <TextBlock Text="{Binding ExtensionError}" Style="{StaticResource ErrorText}"/>
+                            <WrapPanel><Button Content="Зарегистрировать хост" Command="{Binding InstallBrowserCommand}"/><Button Content="Удалить регистрацию" Command="{Binding UninstallBrowserCommand}"/></WrapPanel>
+                            <TextBlock Text="{Binding BrowserStatus}" Style="{StaticResource DimText}" AutomationProperties.LiveSetting="Polite"/>
+                        </StackPanel></Border>
+                        <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Ollama · необязательная интеграция" Style="{StaticResource Heading}"/>
+                            <CheckBox Content="Включить вопросы локальной модели" IsChecked="{Binding OllamaEnabled}"/>
+                            <Label Content="Адрес локального сервера" Target="{Binding ElementName=HostInput}"/>
+                            <TextBox x:Name="HostInput" Text="{Binding OllamaHost, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Адрес сервера Ollama"/>
+                            <TextBlock Text="{Binding HostError}" Style="{StaticResource ErrorText}"/>
+                            <TextBlock Text="{Binding ProcessingAddress}" Style="{StaticResource DimText}"/>
+                            <Button Content="Проверить и получить модели" Command="{Binding CheckOllamaCommand}" HorizontalAlignment="Left"/>
+                            <Label Content="Модель" Target="{Binding ElementName=ModelInput}"/>
+                            <ComboBox x:Name="ModelInput" ItemsSource="{Binding Models}" SelectedItem="{Binding OllamaModel}" MinWidth="230" HorizontalAlignment="Left" AutomationProperties.Name="Модель Ollama"/>
+                            <TextBlock Text="{Binding OllamaStatus}" Style="{StaticResource DimText}" AutomationProperties.LiveSetting="Polite"/>
+                        </StackPanel></Border>
+                    </StackPanel>
+                </StackPanel></ScrollViewer>
+            </TabItem>
         </TabControl>
-
-        <!-- Tray -->
-        <tb:TaskbarIcon x:Name="TrayIcon"
-                        ToolTipText="Personal Activity Time"
-                        TrayLeftMouseDown="TrayIcon_TrayLeftMouseDown"
-                        MenuActivation="RightClick">
-            <tb:TaskbarIcon.ContextMenu>
-                <ContextMenu>
-                    <MenuItem Header="Открыть дашборд" Click="MenuItem_Open"/>
-                    <MenuItem Header="Пауза / Продолжить" Click="MenuItem_TogglePause"/>
-                    <Separator/>
-                    <MenuItem Header="Выход" Click="MenuItem_Exit"/>
-                </ContextMenu>
-            </tb:TaskbarIcon.ContextMenu>
+        <tb:TaskbarIcon x:Name="TrayIcon" ToolTipText="Personal Activity Time" TrayLeftMouseDown="TrayIcon_TrayLeftMouseDown" MenuActivation="RightClick">
+            <tb:TaskbarIcon.ContextMenu><ContextMenu x:Name="TrayMenu"><MenuItem Header="Открыть обзор" Click="MenuItem_Open"/><MenuItem Header="{Binding TrackingLabel}" IsEnabled="False"/>
+                <MenuItem Header="{Binding PauseLabel}" Command="{Binding TogglePauseCommand}"/><Separator/><MenuItem Header="Выйти" Click="MenuItem_Exit"/></ContextMenu></tb:TaskbarIcon.ContextMenu>
         </tb:TaskbarIcon>
     </Grid>
 </Window>

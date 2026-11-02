@@ -20,6 +20,7 @@ public sealed class PatSettings
     public string OllamaModel { get; set; } = "";
 
     public bool StartWithWindows { get; set; }
+    public bool HasSeenTrayHint { get; set; }
 
     /// <summary>Сколько дней хранить журнал и сессии; 0 = хранить вечно.</summary>
     public int RetentionDays { get; set; } = 180;

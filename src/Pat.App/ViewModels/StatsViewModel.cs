@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Windows.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Pat.Core;
@@ -7,91 +6,63 @@ using Pat.Infrastructure.Database;
 
 namespace Pat.App.ViewModels;
 
-/// <summary>Вкладка «Статистика»: неделя/месяц, итоги по дням из журнала, метрики за период.</summary>
-public sealed partial class StatsViewModel(
-    StatsService stats,
-    EventRepository events,
-    Services.ExportService export) : ObservableObject
+public sealed record DaySummaryVm(DateTime Date, string Active, string Idle);
+
+public sealed partial class StatsViewModel(StatsService stats, EventRepository events) : ObservableObject
 {
+    private readonly LatestLoad _load = new();
     [ObservableProperty] private bool _monthRange;
     [ObservableProperty] private string _rangeLabel = "7 дней";
     [ObservableProperty] private string _activeSummary = "";
-
+    [ObservableProperty] private string _status = "";
+    [ObservableProperty] private bool _isLoading;
+    [ObservableProperty] private ObservableCollection<TotalRowVm> _categories = [];
+    [ObservableProperty] private ObservableCollection<DaySummaryVm> _daySummaries = [];
     public List<DayTotals> Days { get; private set; } = [];
-
-    /// <summary>Топ категорий за период (для списка под графиком).</summary>
-    public ObservableCollection<TotalRowVm> Categories { get; private set; } = [];
-
     public List<EventRepository.MetricSampleEntry> MetricSamples { get; private set; } = [];
-
+    public (long Start, long End)? LoadedRange { get; private set; }
     public event Action? StatsLoaded;
-    private int _loadVersion;
-
-    [RelayCommand]
-    private async Task SetRangeWeekAsync()
-    {
-        MonthRange = false;
-        try { await LoadAsync(); }
-        catch (Exception ex) { ActiveSummary = "Не удалось загрузить статистику: " + ex.Message; }
-    }
-
-    [RelayCommand]
-    private async Task SetRangeMonthAsync()
-    {
-        MonthRange = true;
-        try { await LoadAsync(); }
-        catch (Exception ex) { ActiveSummary = "Не удалось загрузить статистику: " + ex.Message; }
-    }
-
-    [RelayCommand]
-    private void ExportPeriod()
-    {
-        var days = MonthRange ? 30 : 7;
-        var rangeStart = DateTime.Now.Date.AddDays(-(days - 1));
-        var (fromUtcMs, _) = LocalDay.Bounds(rangeStart);
-        export.ExportRange(MonthRange ? "activity_30d" : "activity_7d",
-            fromUtcMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-    }
-
+    public event Action<DateTime>? DayRequested;
+    [RelayCommand] private async Task SetRangeWeekAsync() { MonthRange = false; await LoadAsync(); }
+    [RelayCommand] private async Task SetRangeMonthAsync() { MonthRange = true; await LoadAsync(); }
+    [RelayCommand] private void OpenDay(DaySummaryVm? day) { if (day is not null) DayRequested?.Invoke(day.Date); }
+    public void CancelLoad() { _load.Cancel(); IsLoading = false; }
     public async Task LoadAsync()
     {
-        var version = ++_loadVersion;
+        var request = _load.Begin();
         var days = MonthRange ? 30 : 7;
-        RangeLabel = MonthRange ? "30 дней" : "7 дней";
-
-        var rangeStart = DateTime.Now.Date.AddDays(-(days - 1));
-        var (rangeStartUtc, _) = LocalDay.Bounds(rangeStart);
-        var endDate = DateTime.Now.Date.AddDays(1);
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var snapshot = await Task.Run(() => (
-            Days: stats.GetDailyTotals(rangeStart, endDate),
-            Metrics: events.GetMetricSamples(rangeStartUtc, now)));
-        if (version != _loadVersion) return;
-        Days = snapshot.Days;
-        MetricSamples = snapshot.Metrics;
-
-        var totalActive = TimeSpan.FromTicks(Days.Sum(d => d.Active.Ticks));
-        ActiveSummary = $"Активно за период: {TimeText.Humanize(totalActive)}";
-
-        var byCategory = Days
-            .SelectMany(d => d.Categories)
-            .GroupBy(c => c.Name)
-            .Select(g => (Name: g.Key, ColorHex: g.First().ColorHex, Total: TimeSpan.FromTicks(g.Sum(c => c.Total.Ticks))))
-            .OrderByDescending(c => c.Total)
-            .ToList();
-
-        Categories = new ObservableCollection<TotalRowVm>(byCategory.Select(c => new TotalRowVm
+        var fromDate = DateTime.Today.AddDays(-(days - 1));
+        var (start, _) = LocalDay.Bounds(fromDate);
+        var today = DateTime.Today;
+        var end = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        IsLoading = true;
+        Status = "Загрузка статистики…";
+        try
         {
-            Name = c.Name,
-            Time = TimeText.Humanize(c.Total),
-            Color = new SolidColorBrush(
-                (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(c.ColorHex)),
-            BarFraction = totalActive > TimeSpan.Zero
-                ? c.Total.Ticks / (double)totalActive.Ticks
-                : 0,
-        }));
-
-        OnPropertyChanged(nameof(Categories));
-        StatsLoaded?.Invoke();
+            var result = await Task.Run(() =>
+            {
+                request.Token.ThrowIfCancellationRequested();
+                var totals = stats.GetDailyTotals(fromDate, today.AddDays(1));
+                request.Token.ThrowIfCancellationRequested();
+                return (totals, samples: events.GetMetricSamples(start, end));
+            }, request.Token);
+            if (!_load.IsCurrent(request)) return;
+            Days = result.totals;
+            MetricSamples = result.samples;
+            LoadedRange = (start, end);
+            RangeLabel = $"{days} дней · {fromDate:dd.MM.yyyy}–{today:dd.MM.yyyy}";
+            var total = TimeSpan.FromTicks(Days.Sum(d => d.Active.Ticks));
+            ActiveSummary = $"Активно за период: {TimeText.Humanize(total)}";
+            Categories = new(Days.SelectMany(d => d.Categories).GroupBy(c => c.Name)
+                .Select(g => (Name: g.Key, Color: g.First().ColorHex, Total: TimeSpan.FromTicks(g.Sum(c => c.Total.Ticks))))
+                .OrderByDescending(c => c.Total).Select(c => new TotalRowVm(c.Name,
+                    TimeText.Humanize(c.Total), TodayViewModel.Brush(c.Color), total > TimeSpan.Zero ? c.Total / total : 0)));
+            DaySummaries = new(Days.Select(d => new DaySummaryVm(d.LocalDate, TimeText.Humanize(d.Active), TimeText.Humanize(d.Idle))));
+            Status = total == TimeSpan.Zero ? "За выбранный период нет записанной активности." : $"Обновлено в {DateTime.Now:HH:mm:ss}";
+            StatsLoaded?.Invoke();
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
+        catch (Exception ex) { if (_load.IsCurrent(request)) Status = "Не удалось загрузить статистику: " + ex.Message; }
+        finally { if (_load.IsCurrent(request)) IsLoading = false; _load.End(request); }
     }
 }

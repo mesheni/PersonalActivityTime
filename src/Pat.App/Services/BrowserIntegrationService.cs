@@ -28,9 +28,15 @@ public sealed partial class BrowserIntegrationService
     [GeneratedRegex("^[a-p]{32}$")]
     private static partial Regex ExtensionIdPattern();
 
-    public bool IsInstalled =>
-        Registry.CurrentUser.OpenSubKey(ChromeRegistryKey) is not null
-        || Registry.CurrentUser.OpenSubKey(EdgeRegistryKey) is not null;
+    public bool IsInstalled
+    {
+        get
+        {
+            using var chrome = Registry.CurrentUser.OpenSubKey(ChromeRegistryKey);
+            using var edge = Registry.CurrentUser.OpenSubKey(EdgeRegistryKey);
+            return File.Exists(ManifestPath) && (chrome is not null || edge is not null);
+        }
+    }
 
     /// <summary>Записать манифест и ключи реестра. Возвращает сообщение для пользователя.</summary>
     public (bool Ok, string Message) Install(string extensionId)
@@ -79,10 +85,15 @@ public sealed partial class BrowserIntegrationService
         return (true, $"Готово. Перезапустите браузер — визиты появятся в карточке «Браузер».\nМанифест: {ManifestPath}");
     }
 
-    public void Uninstall()
+    public Infrastructure.OperationResult Uninstall()
     {
-        try { Registry.CurrentUser.DeleteSubKeyTree(ChromeRegistryKey, throwOnMissingSubKey: false); } catch { }
-        try { Registry.CurrentUser.DeleteSubKeyTree(EdgeRegistryKey, throwOnMissingSubKey: false); } catch { }
-        try { Directory.Delete(ManifestDirectory, recursive: true); } catch { }
+        try
+        {
+            Registry.CurrentUser.DeleteSubKeyTree(ChromeRegistryKey, throwOnMissingSubKey: false);
+            Registry.CurrentUser.DeleteSubKeyTree(EdgeRegistryKey, throwOnMissingSubKey: false);
+            if (Directory.Exists(ManifestDirectory)) Directory.Delete(ManifestDirectory, recursive: true);
+            return new(Infrastructure.OperationStatus.Success, "Регистрация хоста удалена. Само расширение удаляется в браузере.");
+        }
+        catch (Exception ex) { return Infrastructure.OperationResult.Failure(ex); }
     }
 }

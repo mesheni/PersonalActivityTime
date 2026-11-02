@@ -1,290 +1,187 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
-using Pat.App.Tracking;
+using System.Windows.Input;
 using Pat.App.ViewModels;
 using Pat.Infrastructure.Database;
+using Pat.Infrastructure.Settings;
 using ScottPlot;
 
 namespace Pat.App;
 
-/// <summary>Конвертеры для XAML.</summary>
-public sealed class BarWidthConverter : IMultiValueConverter
-{
-    public object Convert(object[] values, Type targetType, object parameter, System.Globalization.CultureInfo culture)
-    {
-        if (values is [double fraction, double containerWidth] && containerWidth > 0 && fraction > 0)
-            return Math.Max(4, fraction * (containerWidth - 40));
-        return 0.0;
-    }
-
-    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, System.Globalization.CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
-public sealed class EmptyListToVisibilityConverter : IValueConverter
-{
-    public object Convert(object? value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
-        value is System.Collections.ICollection { Count: 0 } ? Visibility.Visible : Visibility.Collapsed;
-
-    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
-/// <summary>Непустая строка → Visible (для показа ответа LLM).</summary>
 public sealed class NonEmptyStringToVisibilityConverter : IValueConverter
 {
-    public object Convert(object? value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+    public object Convert(object? value, Type targetType, object parameter, CultureInfo culture) =>
         value is string { Length: > 0 } ? Visibility.Visible : Visibility.Collapsed;
-
-    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
-        throw new NotSupportedException();
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
 }
-
-/// <summary>bool → !bool (кнопка отключена, пока идёт запрос).</summary>
 public sealed class InverseBoolConverter : IValueConverter
 {
-    public object Convert(object? value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
-        value is bool b ? !b : true;
-
-    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
-        value is bool b ? !b : true;
+    public object Convert(object? value, Type targetType, object parameter, CultureInfo culture) => value is not true;
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => value is not true;
+}
+public sealed class InverseVisibilityConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object parameter, CultureInfo culture) => value is true ? Visibility.Collapsed : Visibility.Visible;
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
 }
 
 public partial class MainWindow : Window
 {
-    private readonly TodayViewModel _viewModel;
-    private readonly ReportViewModel _reportViewModel;
-    private readonly StatsViewModel _statsViewModel;
-    private readonly TrackingService _tracking;
+    private readonly ShellViewModel _shell;
+    private readonly SettingsStore _settings;
     private readonly System.Windows.Threading.DispatcherTimer _refreshTimer;
+    private DateTime _lastToday = DateTime.Today;
+    private bool _allowClose;
+    private bool _trayHintShown;
 
-    public MainWindow(TodayViewModel viewModel, ReportViewModel reportViewModel, StatsViewModel statsViewModel, TrackingService tracking)
+    public MainWindow(ShellViewModel shell, SettingsStore settings)
     {
-        _viewModel = viewModel;
-        _reportViewModel = reportViewModel;
-        _statsViewModel = statsViewModel;
-        _tracking = tracking;
+        _shell = shell; _settings = settings;
         InitializeComponent();
-        DataContext = viewModel;
-        ReportRoot.DataContext = reportViewModel;
-        StatsRoot.DataContext = statsViewModel;
-        var icon = App.CreateAppIcon();
-        Icon = icon;
-        TrayIcon.IconSource = icon;
-
-        viewModel.Initialize();
-        reportViewModel.Initialize();
-        viewModel.PlotsStale += RenderTodayPlots;
-        statsViewModel.StatsLoaded += RenderStatsPlots;
-
-        _refreshTimer = new System.Windows.Threading.DispatcherTimer
+        DataContext = shell;
+        TrayMenu.DataContext = shell;
+        Icon = App.CreateAppIcon();
+        TrayIcon.IconSource = Icon;
+        shell.PropertyChanged += (_, e) =>
         {
-            Interval = TimeSpan.FromSeconds(30),
+            if (e.PropertyName == nameof(ShellViewModel.TrackingLabel)) UpdateTray();
         };
-        _refreshTimer.Tick += (_, _) => viewModel.Refresh();
+        shell.Journal.MetricsLoaded += () => RenderMetricsPlot(TodayMetricsPlot, shell.Journal.MetricSamples);
+        shell.Stats.StatsLoaded += () =>
+        {
+            RenderDailyBars(DailyActivityPlot, shell.Stats.Days);
+            RenderMetricsPlot(RangeMetricsPlot, shell.Stats.MetricSamples);
+        };
+        _refreshTimer = new() { Interval = TimeSpan.FromSeconds(30) };
+        _refreshTimer.Tick += RefreshTimer_Tick;
         _refreshTimer.Start();
-
-        Loaded += (_, _) => viewModel.Refresh();
+        Loaded += async (_, _) => { UpdateTray(); await shell.RefreshVisibleAsync(); };
+        IsVisibleChanged += async (_, _) => { if (IsVisible && IsLoaded) await shell.RefreshVisibleAsync(); };
     }
 
-    private void TimelineCanvas_Loaded(object sender, RoutedEventArgs e) =>
-        UpdateTimelineWidth(sender);
-
-    private void TimelineCanvas_SizeChanged(object sender, SizeChangedEventArgs e) =>
-        UpdateTimelineWidth(sender);
-
+    private void UpdateTray() => TrayIcon.ToolTipText = "Personal Activity Time · " + _shell.TrackingLabel;
+    private async void RefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        var followedToday = _shell.Day.SelectedDate == _lastToday;
+        if (_lastToday != DateTime.Today)
+        {
+            _lastToday = DateTime.Today;
+            _shell.Day.UpdateToday();
+            if (followedToday) { _shell.Day.SelectedDate = _lastToday; return; }
+        }
+        if (IsVisible && ((_shell.ShowsDay && _shell.Day.IsToday) || _shell.SelectedSection == 2))
+            await _shell.RefreshVisibleAsync();
+    }
+    private void TimelineCanvas_Loaded(object sender, RoutedEventArgs e) => UpdateTimelineWidth(sender);
+    private void TimelineCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateTimelineWidth(sender);
     private void UpdateTimelineWidth(object sender)
     {
-        if (sender is Canvas canvas)
-            _viewModel.TimelineWidth = Math.Max(50, canvas.ActualWidth);
+        if (sender is Canvas canvas) _shell.Overview.TimelineWidth = Math.Max(50, canvas.ActualWidth);
     }
-
-    private async void TabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void DailyPlot_OpenDay(object sender, MouseButtonEventArgs e)
     {
-        if (!ReferenceEquals(e.OriginalSource, sender))
-            return;
-        try
-        {
-            if (ReportTab.IsSelected) _reportViewModel.Load();
-            else if (StatsTab.IsSelected) await _statsViewModel.LoadAsync();
-        }
-        catch (Exception ex) { MessageBox.Show(ex.Message, "Ошибка загрузки отчёта"); }
+        if (_shell.Stats.IsLoading || _shell.Stats.Days.Count == 0) return;
+        var pixel = DailyActivityPlot.GetPlotPixelPosition(e);
+        var coordinates = DailyActivityPlot.Plot.GetCoordinates(pixel);
+        var index = (int)Math.Round(coordinates.X);
+        if (coordinates.Y < 0 || index < 0 || index >= _shell.Stats.Days.Count || Math.Abs(coordinates.X - index) > .5) return;
+        _shell.OpenDay(_shell.Stats.Days[index].LocalDate);
     }
-
-    // ==================== Отрисовка ScottPlot ====================
+    private void CopyJournalDetails(object sender, RoutedEventArgs e)
+    {
+        try { if (!string.IsNullOrEmpty(JournalDetails.Text)) Clipboard.SetText(JournalDetails.Text); }
+        catch (Exception ex) { _shell.OperationStatus = "Не удалось скопировать: " + ex.Message; }
+    }
 
     private static void StylePlot(Plot plot)
     {
         plot.FigureBackground = new BackgroundStyle { Color = Color.FromHex("#242730") };
         plot.DataBackground = new BackgroundStyle { Color = Color.FromHex("#242730") };
-        plot.Axes.Color(Color.FromHex("#8B92A3"));
+        plot.Axes.Color(Color.FromHex("#ADB4C4"));
         plot.Grid.MajorLineColor = Color.FromHex("#333744");
         plot.Legend.BackgroundColor = Color.FromHex("#242730");
         plot.Legend.FontColor = Color.FromHex("#E6E8EE");
         plot.Legend.FontSize = 11;
     }
-
-    private void RenderTodayPlots() => RenderMetricsPlot(TodayMetricsPlot, _viewModel.MetricSamples);
-
-    private void RenderStatsPlots()
-    {
-        RenderDailyBars(DailyActivityPlot, _statsViewModel.Days);
-        RenderMetricsPlot(RangeMetricsPlot, _statsViewModel.MetricSamples);
-    }
-
-    /// <summary>Линии CPU% и RAM% по сэмплам (ось X — время).</summary>
     private static void RenderMetricsPlot(ScottPlot.WPF.WpfPlot control, IReadOnlyList<EventRepository.MetricSampleEntry> samples)
     {
         var plot = control.Plot;
-        plot.Clear();
-        StylePlot(plot);
-
+        plot.Clear(); StylePlot(plot);
         if (samples.Count >= 2)
         {
-            var xs = samples
-                .Select(s => DateTimeOffset.FromUnixTimeMilliseconds(s.TsUtcMs).ToLocalTime().DateTime.ToOADate())
-                .ToArray();
-
+            var xs = samples.Select(s => DateTimeOffset.FromUnixTimeMilliseconds(s.TsUtcMs).ToLocalTime().DateTime.ToOADate()).ToArray();
             var cpu = plot.Add.Scatter(xs, samples.Select(s => s.CpuPercent).ToArray());
-            cpu.LegendText = "CPU %";
-            cpu.LineColor = Color.FromHex("#3B82F6");
-            cpu.LineWidth = 1.5f;
-            cpu.MarkerSize = 0;
-
+            cpu.LegendText = "CPU %"; cpu.LineColor = Color.FromHex("#60A5FA"); cpu.LineWidth = 1.5f; cpu.MarkerSize = 0;
             var ram = plot.Add.Scatter(xs, samples.Select(s => s.RamPercent).ToArray());
-            ram.LegendText = "RAM %";
-            ram.LineColor = Color.FromHex("#F59E0B");
-            ram.LineWidth = 1.5f;
-            ram.MarkerSize = 0;
-
-            plot.Axes.DateTimeTicksBottom();
-            plot.Axes.SetLimitsY(0, 100);
-            plot.ShowLegend();
+            ram.LegendText = "RAM %"; ram.LineColor = Color.FromHex("#FBBF24"); ram.LineWidth = 1.5f; ram.MarkerSize = 0;
+            plot.Axes.DateTimeTicksBottom(); plot.ShowLegend();
         }
-        else
-        {
-            plot.Axes.SetLimitsY(0, 100);
-        }
-
-        control.Refresh();
+        plot.Axes.SetLimitsY(0, 100); control.Refresh();
     }
-
-    /// <summary>Stacked bars: часы активности по дням, серии — топ-категории + «Прочее».</summary>
     private static void RenderDailyBars(ScottPlot.WPF.WpfPlot control, IReadOnlyList<DayTotals> days)
     {
         var plot = control.Plot;
-        plot.Clear();
-        StylePlot(plot);
-
-        if (days.Count == 0)
-        {
-            control.Refresh();
-            return;
-        }
-
-        var categories = days
-            .SelectMany(d => d.Categories)
-            .GroupBy(c => c.Name)
-            .Select(g => (Name: g.Key, ColorHex: g.First().ColorHex,
-                TotalHours: g.Sum(c => c.Total.TotalHours)))
-            .OrderByDescending(c => c.TotalHours)
-            .ToList();
-
-        var top = categories.Take(5).ToList();
-        var restNames = categories.Skip(5).Select(c => c.Name).ToHashSet(StringComparer.Ordinal);
-
+        plot.Clear(); StylePlot(plot);
+        if (days.Count == 0) { control.Refresh(); return; }
+        var categories = days.SelectMany(d => d.Categories).GroupBy(c => c.Name)
+            .Select(g => (Name: g.Key, Color: g.First().ColorHex, Hours: g.Sum(c => c.Total.TotalHours)))
+            .OrderByDescending(c => c.Hours).ToList();
         var bases = new double[days.Count];
-
-        void AddSeries(string name, string colorHex, Func<DayTotals, double> value)
+        void AddSeries(string name, string color, Func<DayTotals, double> value)
         {
             var bars = new List<Bar>();
             for (var i = 0; i < days.Count; i++)
             {
                 var v = value(days[i]);
-                if (v <= 0)
-                    continue;
-                bars.Add(new Bar
-                {
-                    Position = i,
-                    Value = v,
-                    ValueBase = bases[i],
-                    FillColor = Color.FromHex(colorHex),
-                    LineWidth = 0,
-                });
+                if (v <= 0) continue;
+                bars.Add(new Bar { Position = i, Value = v, ValueBase = bases[i], FillColor = Color.FromHex(color), LineWidth = 0 });
                 bases[i] += v;
             }
-
-            if (bars.Count > 0)
-            {
-                var series = plot.Add.Bars(bars.ToArray());
-                series.LegendText = name;
-            }
+            if (bars.Count > 0) plot.Add.Bars(bars.ToArray()).LegendText = name;
         }
-
-        foreach (var cat in top)
-        {
-            var localCat = cat;
-            AddSeries(cat.Name, cat.ColorHex, d =>
-                d.Categories.Where(c => c.Name == localCat.Name).Sum(c => c.Total.TotalHours));
-        }
-
-        if (restNames.Count > 0)
-        {
-            AddSeries("Прочее", "#94A3B8", d =>
-                d.Categories.Where(c => restNames.Contains(c.Name)).Sum(c => c.Total.TotalHours));
-        }
-
-        var positions = Enumerable.Range(0, days.Count).Select(i => (double)i).ToArray();
-        var labels = days.Select(d => d.LocalDate.ToString("dd.MM")).ToArray();
-        plot.Axes.Bottom.TickGenerator = new ScottPlot.TickGenerators.NumericManual(positions, labels);
-        plot.Axes.SetLimits(-0.7, days.Count - 0.3, 0, Math.Max(1, bases.Max() * 1.1));
-        plot.ShowLegend();
-
-        control.Refresh();
+        foreach (var cat in categories.Take(5))
+            AddSeries(cat.Name, cat.Color, d => d.Categories.Where(c => c.Name == cat.Name).Sum(c => c.Total.TotalHours));
+        var rest = categories.Skip(5).Select(c => c.Name).ToHashSet();
+        if (rest.Count > 0) AddSeries("Прочее", "#94A3B8", d => d.Categories.Where(c => rest.Contains(c.Name)).Sum(c => c.Total.TotalHours));
+        // Keep 30-day labels readable at the minimum window width.
+        var indices = Enumerable.Range(0, days.Count).Where(i => days.Count <= 7 || i % 3 == 0 || i == days.Count - 1).ToArray();
+        plot.Axes.Bottom.TickGenerator = new ScottPlot.TickGenerators.NumericManual(indices.Select(i => (double)i).ToArray(), indices.Select(i => days[i].LocalDate.ToString("dd.MM")).ToArray());
+        plot.Axes.SetLimits(-.7, days.Count - .3, 0, Math.Max(1, bases.Max() * 1.1));
+        plot.ShowLegend(); control.Refresh();
     }
-
-    // ==================== Tray / lifecycle ====================
-
-    private void TrayIcon_TrayLeftMouseDown(object sender, RoutedEventArgs e)
+    private void OpenWindow()
     {
-        Show();
-        Activate();
+        Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; Activate();
     }
-
-    private void MenuItem_Open(object sender, RoutedEventArgs e)
-    {
-        Show();
-        Activate();
-    }
-
-    private async void MenuItem_TogglePause(object sender, RoutedEventArgs e)
-    {
-        try { await _tracking.TogglePauseAsync(); _viewModel.Refresh(); }
-        catch (Exception ex) { MessageBox.Show(ex.Message, "Трекинг"); }
-    }
-
+    private void TrayIcon_TrayLeftMouseDown(object sender, RoutedEventArgs e) => OpenWindow();
+    private void MenuItem_Open(object sender, RoutedEventArgs e) { _shell.SelectedSection = 0; OpenWindow(); }
     private void MenuItem_Exit(object sender, RoutedEventArgs e)
     {
-        _allowClose = true;
-        Close();
-        Application.Current.Shutdown();
+        if (_shell.Settings.IsDirty && MessageBox.Show("Выйти без сохранения изменений настроек?", "Несохранённые изменения",
+            MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+        _allowClose = true; Close(); Application.Current.Shutdown();
     }
-
-    private bool _allowClose;
-
     protected override void OnClosing(CancelEventArgs e)
     {
-        // Крестик прячет окно в tray; выход — только через меню трея
         if (!_allowClose)
         {
             e.Cancel = true;
-            Hide();
-            return;
+            var settings = _settings.Settings;
+            if (!settings.HasSeenTrayHint && !_trayHintShown)
+            {
+                _trayHintShown = true;
+                MessageBox.Show("Окно будет скрыто, а запись активности продолжится. Открыть приложение и завершить его можно через значок в области уведомлений. Команда «Выйти» также доступна в окне.",
+                    "Приложение продолжает работать", MessageBoxButton.OK, MessageBoxImage.Information);
+                settings.HasSeenTrayHint = true;
+                var result = _settings.TrySave(settings);
+                if (!result.IsSuccess) _shell.OperationStatus = result.Message;
+            }
+            Hide(); return;
         }
-        _refreshTimer.Stop();
-        TrayIcon.Dispose();
-        base.OnClosing(e);
+        _refreshTimer.Stop(); _shell.Overview.CancelLoad(); _shell.Journal.CancelLoad(); _shell.Stats.CancelLoad();
+        _shell.Assistant.AskCommand.Cancel(); TrayIcon.Dispose(); base.OnClosing(e);
     }
 }

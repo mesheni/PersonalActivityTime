@@ -34,7 +34,7 @@ public sealed class SettingsStore
         IdleThresholdSeconds = s.IdleThresholdSeconds, ExcludedProcesses = [.. s.ExcludedProcesses],
         WatchedRoots = [.. s.WatchedRoots], BrowserExtensionId = s.BrowserExtensionId,
         OllamaEnabled = s.OllamaEnabled, OllamaHost = s.OllamaHost, OllamaModel = s.OllamaModel,
-        StartWithWindows = s.StartWithWindows, RetentionDays = s.RetentionDays,
+        StartWithWindows = s.StartWithWindows, RetentionDays = s.RetentionDays, HasSeenTrayHint = s.HasSeenTrayHint,
         CategoryRules = s.CategoryRules is null ? null : [.. s.CategoryRules],
     };
 
@@ -111,5 +111,11 @@ public sealed class SettingsStore
             }
             finally { if (File.Exists(temp)) File.Delete(temp); }
         }
+    }
+
+    public OperationResult TrySave(PatSettings settings)
+    {
+        try { Save(settings); return new(OperationStatus.Success, "Настройки сохранены."); }
+        catch (Exception ex) { return new(OperationStatus.Error, "Настройки не сохранены: " + ex.Message); }
     }
 }

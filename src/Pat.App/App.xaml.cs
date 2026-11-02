@@ -59,6 +59,12 @@ public partial class App : Application
         services.AddSingleton<Services.BrowserIntegrationService>();
         services.AddSingleton<Services.RetentionService>();
         services.AddSingleton<Services.ExportService>();
+        services.AddSingleton<IDayActivityService, DayActivityService>();
+        services.AddSingleton<JournalReader>();
+        services.AddSingleton<DayContext>();
+        services.AddSingleton<JournalViewModel>();
+        services.AddSingleton<SettingsViewModel>();
+        services.AddSingleton<ShellViewModel>();
 
         services.AddSingleton<TodayViewModel>();
         services.AddSingleton<ReportViewModel>();
