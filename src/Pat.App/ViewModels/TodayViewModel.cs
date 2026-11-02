@@ -65,7 +65,6 @@ public sealed class BrowserVisitVm
 }
 
 public sealed partial class TodayViewModel(
-    SessionRepository sessions,
     EventRepository events,
     SessionMaterializer materializer,
     SettingsStore settingsStore,
@@ -129,18 +128,22 @@ public sealed partial class TodayViewModel(
         UpdatePauseLabel();
     }
 
-    private void UpdatePauseLabel() =>
-        PauseLabel = tracking.State == TrackingState.Running ? "Пауза" : "Продолжить";
+    private void UpdatePauseLabel() => PauseLabel = tracking.StorageError is not null
+        ? "Ошибка записи — пауза" : tracking.State == TrackingState.Running ? "Пауза" : "Продолжить";
 
     [RelayCommand]
-    private void TogglePause() => tracking.TogglePause();
+    private async Task TogglePauseAsync()
+    {
+        try { await tracking.TogglePauseAsync(); Refresh(); }
+        catch (Exception ex) { System.Windows.MessageBox.Show(ex.Message, "Трекинг"); }
+    }
 
     [RelayCommand]
     public void Refresh()
     {
         var (dayStart, dayEnd) = LocalDay.Today();
         var rules = materializer.CurrentRules();
-        var rows = sessions.GetRange(dayStart, dayEnd, rules);
+        var rows = materializer.BuildRows(dayStart, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
         _dayRows = rows;
         var segments = rows.Select(ToSegment).ToList();
@@ -303,11 +306,13 @@ public sealed partial class TodayViewModel(
     private void RebuildHourTicks()
     {
         var width = Math.Max(1, TimelineWidth);
+        var (start, end) = LocalDay.Today();
+        var hours = (end - start) / 3_600_000.0;
         HourTicks = new ObservableCollection<HourTickVm>(
-            Enumerable.Range(0, 25).Select(h => new HourTickVm
+            Enumerable.Range(0, (int)hours + 1).Select(h => new HourTickVm
             {
-                Left = h / 24.0 * width - (h % 6 == 0 ? 10 : 6),
-                Label = h.ToString(),
+                Left = h / hours * width - (h % 6 == 0 ? 10 : 6),
+                Label = h == (int)hours ? "24" : DateTimeOffset.FromUnixTimeMilliseconds(start + h * 3_600_000L).ToLocalTime().Hour.ToString(),
             }));
     }
 
@@ -334,7 +339,7 @@ public sealed partial class TodayViewModel(
     }
 
     [RelayCommand]
-    private void SaveSettings()
+    private async Task SaveSettingsAsync()
     {
         var s = settingsStore.Settings;
         s.IdleThresholdSeconds = Math.Max(1, IdleThresholdMinutes) * 60;
@@ -349,7 +354,9 @@ public sealed partial class TodayViewModel(
         s.BrowserExtensionId = string.IsNullOrWhiteSpace(ExtensionId) ? null : ExtensionId.Trim();
         s.StartWithWindows = AutoStartEnabled;
         s.RetentionDays = Math.Max(0, RetentionDays);
-        settingsStore.Save(s);
+        try { settingsStore.Save(s); }
+        catch (Exception ex) { System.Windows.MessageBox.Show(ex.Message, "Настройки не сохранены"); return; }
+        if (!tracking.IsStarted) tracking.Start();
 
         if (AutoStart.IsEnabled() != AutoStartEnabled)
             AutoStart.SetEnabled(AutoStartEnabled);
@@ -358,7 +365,8 @@ public sealed partial class TodayViewModel(
         fileCollector.Reconfigure();
 
         // Правила/исключения могли измениться — пересобираем сессии и обновляем экран
-        tracking.RefreshSessions();
+        try { await tracking.RefreshSessionsAsync(); }
+        catch (Exception ex) { System.Windows.MessageBox.Show(ex.Message, "Ошибка обновления"); }
         Refresh();
     }
 

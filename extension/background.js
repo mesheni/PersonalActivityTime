@@ -32,15 +32,18 @@ function send(tab) {
   connect();
   if (!port) return;
   try {
-    port.postMessage({ url: tab.url, title });
+    port.postMessage({ url: tab.url, title, browser: navigator.userAgent.includes("Edg/") ? "msedge" : "chrome" });
   } catch (e) {
     port = null;
   }
 }
 
 function sendActiveTab() {
-  chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-    if (tabs && tabs[0]) send(tabs[0]);
+  chrome.windows.getLastFocused((window) => {
+    if (chrome.runtime.lastError || !window || !window.focused) return;
+    chrome.tabs.query({ active: true, windowId: window.id }, (tabs) => {
+      if (!chrome.runtime.lastError && tabs && tabs[0]) send(tabs[0]);
+    });
   });
 }
 
@@ -49,7 +52,11 @@ chrome.tabs.onActivated.addListener(() => sendActiveTab());
 
 // Навигация или смена заголовка на активной вкладке
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if ((changeInfo.url || changeInfo.title) && tab && tab.active) send(tab);
+  if ((changeInfo.url || changeInfo.title) && tab && tab.active) {
+    chrome.windows.get(tab.windowId, (window) => {
+      if (!chrome.runtime.lastError && window && window.focused) send(tab);
+    });
+  }
 });
 
 // Переключение окна браузера

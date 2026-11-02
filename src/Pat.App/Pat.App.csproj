@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Pat.Core\Pat.Core.csproj" />
     <ProjectReference Include="..\Pat.Infrastructure\Pat.Infrastructure.csproj" />
+    <ProjectReference Include="..\Pat.NativeHost\Pat.NativeHost.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>
@@ -14,10 +15,27 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
   </PropertyGroup>
+
+  <Target Name="CopyNativeHost" AfterTargets="Build;Publish">
+    <MSBuild Projects="..\Pat.NativeHost\Pat.NativeHost.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);TargetFramework=net10.0-windows">
+      <Output TaskParameter="TargetOutputs" ItemName="NativeHostTargetPath" />
+    </MSBuild>
+    <PropertyGroup>
+      <NativeHostOutput>@(NativeHostTargetPath->'%(RootDir)%(Directory)')</NativeHostOutput>
+    </PropertyGroup>
+    <ItemGroup>
+      <NativeHostFiles Include="$(NativeHostOutput)\**\*" />
+    </ItemGroup>
+    <Error Condition="!Exists('$(NativeHostOutput)\Pat.NativeHost.exe')" Text="Native host output is missing." />
+    <Copy SourceFiles="@(NativeHostFiles)" DestinationFiles="@(NativeHostFiles->'$(TargetDir)nativehost\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="PublishNativeHost" AfterTargets="Publish">
+    <Copy SourceFiles="@(NativeHostFiles)" DestinationFiles="@(NativeHostFiles->'$(PublishDir)nativehost\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

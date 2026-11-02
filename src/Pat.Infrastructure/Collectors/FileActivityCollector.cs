@@ -42,6 +42,8 @@ public sealed class FileActivityCollector(SettingsStore settingsStore) : IActivi
     private readonly List<(string Root, FileSystemWatcher Watcher)> _watchers = [];
     private readonly FileEventBuffer _buffer = new();
     private Timer? _flushTimer;
+    private int _generation;
+    private bool _acceptEvents;
 
     private static readonly JsonSerializerOptions PayloadJson = new()
     {
@@ -60,6 +62,7 @@ public sealed class FileActivityCollector(SettingsStore settingsStore) : IActivi
         }
         if (running)
         {
+            lock (_gate) _generation++;
             StopWatchers();
             StartWatchers();
         }
@@ -70,6 +73,8 @@ public sealed class FileActivityCollector(SettingsStore settingsStore) : IActivi
         lock (_gate)
         {
             _writer = writer;
+            _acceptEvents = true;
+            _generation++;
         }
         StartWatchers();
         _flushTimer = new Timer(_ => FlushBuffer(), null, FlushInterval, FlushInterval);
@@ -77,9 +82,11 @@ public sealed class FileActivityCollector(SettingsStore settingsStore) : IActivi
 
     void IActivityCollector.Stop()
     {
-        _flushTimer?.Dispose();
+        lock (_gate) { _acceptEvents = false; _generation++; }
+        if (_flushTimer is { } timer) timer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _flushTimer = null;
         StopWatchers();
+        FlushBuffer();
         lock (_gate)
         {
             _writer = null;
@@ -94,11 +101,16 @@ public sealed class FileActivityCollector(SettingsStore settingsStore) : IActivi
             .ToList();
 
         foreach (var root in roots)
-            AttachWatcher(root);
+        {
+            try { AttachWatcher(root); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            { FileLog.Error.Write($"Не удалось наблюдать «{root}»: {ex.Message}"); }
+        }
     }
 
-    private void AttachWatcher(string root)
+    private void AttachWatcher(string root, int? expectedGeneration = null)
     {
+        var generation = expectedGeneration ?? _generation;
         if (!Directory.Exists(root))
             return;
 
@@ -109,27 +121,30 @@ public sealed class FileActivityCollector(SettingsStore settingsStore) : IActivi
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName
                 | NotifyFilters.DirectoryName | NotifyFilters.Size,
         };
-        watcher.Created += (_, e) => OnFsEvent(ActivityEventKind.FileCreated, e.FullPath, null);
-        watcher.Changed += (_, e) => OnFsEvent(ActivityEventKind.FileModified, e.FullPath, null);
-        watcher.Deleted += (_, e) => OnFsEvent(ActivityEventKind.FileDeleted, e.FullPath, null);
-        watcher.Renamed += (_, e) => OnFsEvent(ActivityEventKind.FileRenamed, e.FullPath, e.OldFullPath);
-        watcher.Error += (_, e) => OnWatcherError(root, e.GetException());
+        watcher.Created += (_, e) => OnFsEvent(ActivityEventKind.FileCreated, e.FullPath, null, generation);
+        watcher.Changed += (_, e) => OnFsEvent(ActivityEventKind.FileModified, e.FullPath, null, generation);
+        watcher.Deleted += (_, e) => OnFsEvent(ActivityEventKind.FileDeleted, e.FullPath, null, generation);
+        watcher.Renamed += (_, e) => OnFsEvent(ActivityEventKind.FileRenamed, e.FullPath, e.OldFullPath, generation);
+        watcher.Error += (_, e) => OnWatcherError(root, e.GetException(), generation);
 
         lock (_gate)
         {
             // Пока готовили watcher, коллектор могли остановить — не оставляем хвост
-            if (_writer is null)
+            if (_writer is null || generation != _generation
+                || _watchers.Any(w => string.Equals(w.Root, root, StringComparison.OrdinalIgnoreCase))
+                || !settingsStore.Settings.WatchedRoots.Contains(root, StringComparer.OrdinalIgnoreCase))
             {
                 watcher.Dispose();
                 return;
             }
             _watchers.Add((root, watcher));
+            watcher.EnableRaisingEvents = true;
         }
-        watcher.EnableRaisingEvents = true;
     }
 
-    private void OnWatcherError(string root, Exception exception)
+    private void OnWatcherError(string root, Exception exception, int generation)
     {
+        lock (_gate) { if (generation != _generation) return; }
         FileLog.Error.Write($"Ошибка FileSystemWatcher на «{root}»: {exception.Message} — перезапускаю наблюдение.");
         DetachWatcher(root);
 
@@ -143,12 +158,12 @@ public sealed class FileActivityCollector(SettingsStore settingsStore) : IActivi
                 bool running;
                 lock (_gate)
                 {
-                    running = _writer is not null;
+                    running = _writer is not null && _generation == generation
+                        && settingsStore.Settings.WatchedRoots.Contains(root, StringComparer.OrdinalIgnoreCase);
                 }
                 if (!running)
                     return;
-                DetachWatcher(root); // на случай гонки с параллельным восстановлением
-                AttachWatcher(root);
+                AttachWatcher(root, generation);
                 FileLog.Error.Write($"Наблюдение «{root}» перезапущено.");
             }
             catch (Exception retryException)
@@ -194,13 +209,16 @@ public sealed class FileActivityCollector(SettingsStore settingsStore) : IActivi
         }
     }
 
-    private void OnFsEvent(ActivityEventKind kind, string path, string? oldPath)
+    private void OnFsEvent(ActivityEventKind kind, string path, string? oldPath, int generation)
     {
         if (ShouldIgnore(path) || (oldPath is not null && ShouldIgnore(oldPath)))
             return;
 
-        _buffer.Add(new BufferedFileEvent(
-            kind, path, oldPath, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        lock (_gate)
+        {
+            if (!_acceptEvents || generation != _generation) return;
+            _buffer.Add(new BufferedFileEvent(kind, path, oldPath, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        }
     }
 
     private void FlushBuffer()

@@ -40,9 +40,9 @@ internal static class Program
     private static string _lastTitle = "";
     private static long _lastTs;
 
-    private sealed record IncomingMessage(string? Url, string? Title);
+    private sealed record IncomingMessage(string? Url, string? Title, string? Browser);
 
-    private sealed record VisitPayload(string Url, string Domain, string Title);
+    private sealed record VisitPayload(string Url, string Domain, string Title, string Browser);
 
     private static int Main()
     {
@@ -78,6 +78,11 @@ internal static class Program
         if (message is null)
             return;
 
+        var store = new Pat.Infrastructure.Settings.SettingsStore();
+        var settings = store.Load();
+        var browser = message.Browser == "msedge" ? "msedge" : "chrome";
+        if (store.LastError is not null || Pat.Infrastructure.Settings.PrivacyPolicy.IsExcluded(settings, browser)) return;
+
         // Рукопожатие Chrome и не-web схемы пропускаются
         if (!UrlNormalizer.TryExtractDomain(message.Url, out var domain))
             return;
@@ -95,7 +100,7 @@ internal static class Program
         if (File.Exists(PausedMarkerPath))
             return; // трекинг на паузе — не пишем
 
-        var payload = JsonSerializer.Serialize(new VisitPayload(url, domain, title), PayloadJson);
+        var payload = JsonSerializer.Serialize(new VisitPayload(url, domain, title, browser), PayloadJson);
         var ev = ActivityEvent.Journal(ActivityEventKind.BrowserVisit, now, payload);
 
         lock (DbGate)

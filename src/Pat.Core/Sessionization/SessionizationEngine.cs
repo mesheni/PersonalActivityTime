@@ -26,6 +26,32 @@ public sealed class SessionizationEngine
         ActivityEvent? lastForeground = null;
         ActivitySegment? current = null;
         long? idleStart = null;
+        bool locked = false, suspended = false, paused = false, stopped = false;
+        bool Blocked() => locked || suspended || paused || stopped;
+
+        var ordered = events.Where(e => e.TimestampUtcMs <= endBoundaryUtcMs)
+            .OrderBy(e => e.TimestampUtcMs).ToList();
+        // A later start proves the previous run ended. Without a stop, only its
+        // last heartbeat is known. The current run gets a short, bounded lease.
+        var runEnds = new Dictionary<int, long>();
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            if (ordered[i].Kind != ActivityEventKind.TrackingStarted) continue;
+            var confirmed = ordered[i].TimestampUtcMs;
+            var j = i + 1;
+            for (; j < ordered.Count && ordered[j].Kind != ActivityEventKind.TrackingStarted; j++)
+            {
+                if (ordered[j].Kind == ActivityEventKind.TrackingHeartbeat)
+                    confirmed = ordered[j].TimestampUtcMs;
+                if (ordered[j].Kind == ActivityEventKind.TrackingStopped)
+                {
+                    confirmed = ordered[j].TimestampUtcMs;
+                    break;
+                }
+            }
+            runEnds[i] = j < ordered.Count ? confirmed : Math.Min(endBoundaryUtcMs, confirmed + 15_000);
+        }
+        long runEnd = endBoundaryUtcMs;
 
         void CloseActive(long endUtcMs)
         {
@@ -43,25 +69,44 @@ public sealed class SessionizationEngine
 
         void ReopenForeground(long startUtcMs)
         {
-            if (current is null && lastForeground is { } fg)
+            if (!Blocked() && idleStart is null && current is null && lastForeground is { } fg)
                 current = fg.ToStartOfSegment() with { StartUtcMs = startUtcMs };
         }
 
-        foreach (var ev in events.OrderBy(e => e.TimestampUtcMs))
+        for (var index = 0; index < ordered.Count; index++)
         {
+            var ev = ordered[index];
+            if (ev.TimestampUtcMs > runEnd)
+            {
+                CloseActive(runEnd);
+                CloseIdle(runEnd);
+                stopped = true;
+            }
             switch (ev.Kind)
             {
-                case ActivityEventKind.ForegroundChanged:
-                    // Смена окна руками пользователя означает конец простоя.
+                case ActivityEventKind.TrackingStarted:
+                    CloseActive(Math.Min(ev.TimestampUtcMs, runEnd));
+                    CloseIdle(Math.Min(ev.TimestampUtcMs, runEnd));
+                    lastForeground = null;
+                    locked = suspended = paused = stopped = false;
+                    runEnd = runEnds[index];
+                    break;
+                case ActivityEventKind.TrackingStopped:
+                    CloseActive(ev.TimestampUtcMs);
                     CloseIdle(ev.TimestampUtcMs);
+                    stopped = true;
+                    lastForeground = null;
+                    break;
+                case ActivityEventKind.ForegroundChanged:
+                    // A title change is context, not evidence of user input.
                     CloseActive(ev.TimestampUtcMs);
                     lastForeground = ev;
-                    current = ev.ToStartOfSegment();
+                    ReopenForeground(ev.TimestampUtcMs);
                     break;
 
                 case ActivityEventKind.IdleBegan:
                     CloseActive(ev.TimestampUtcMs);
-                    idleStart ??= ev.TimestampUtcMs;
+                    if (!Blocked()) idleStart ??= ev.TimestampUtcMs;
                     break;
 
                 case ActivityEventKind.IdleEnded:
@@ -72,6 +117,9 @@ public sealed class SessionizationEngine
                 case ActivityEventKind.SessionLocked:
                 case ActivityEventKind.SystemSuspend:
                 case ActivityEventKind.TrackingPaused:
+                    if (ev.Kind == ActivityEventKind.SessionLocked) locked = true;
+                    if (ev.Kind == ActivityEventKind.SystemSuspend) suspended = true;
+                    if (ev.Kind == ActivityEventKind.TrackingPaused) paused = true;
                     CloseActive(ev.TimestampUtcMs);
                     CloseIdle(ev.TimestampUtcMs);
                     break;
@@ -79,6 +127,9 @@ public sealed class SessionizationEngine
                 case ActivityEventKind.SessionUnlocked:
                 case ActivityEventKind.SystemResume:
                 case ActivityEventKind.TrackingResumed:
+                    if (ev.Kind == ActivityEventKind.SessionUnlocked) locked = false;
+                    if (ev.Kind == ActivityEventKind.SystemResume) suspended = false;
+                    if (ev.Kind == ActivityEventKind.TrackingResumed) paused = false;
                     CloseIdle(ev.TimestampUtcMs);
                     ReopenForeground(ev.TimestampUtcMs);
                     break;
@@ -101,8 +152,8 @@ public sealed class SessionizationEngine
             }
         }
 
-        CloseActive(endBoundaryUtcMs);
-        CloseIdle(endBoundaryUtcMs);
+        CloseActive(Math.Min(endBoundaryUtcMs, runEnd));
+        CloseIdle(Math.Min(endBoundaryUtcMs, runEnd));
 
         return MergeAdjacent(result, opts);
     }
@@ -123,6 +174,8 @@ public sealed class SessionizationEngine
 
     private static bool CanMerge(ActivitySegment prev, ActivitySegment next, int mergeGapMs)
     {
+        // Never count a real pause/lock gap as active time.
+        if (next.StartUtcMs != prev.EndUtcMs) return false;
         if (prev.IsIdle != next.IsIdle)
             return false;
         if (prev.IsIdle)

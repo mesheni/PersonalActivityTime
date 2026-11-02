@@ -170,11 +170,12 @@ public sealed class DatabasePipelineTests : IDisposable
             ActivityEvent.Foreground(day1Start, @"C:\Rider\bin\rider64.exe", "rider64", "Wafer"),
             ActivityEvent.Foreground(day1Start + 30 * 60_000, @"C:\explorer.exe", "explorer", "files"),
             ActivityEvent.System(ActivityEventKind.IdleBegan, day1Start + 40 * 60_000),
+            ActivityEvent.System(ActivityEventKind.IdleEnded, day2Start),
             ActivityEvent.Foreground(day2Start, @"C:\chrome.exe", "chrome", "docs"),
             ActivityEvent.System(ActivityEventKind.IdleBegan, day2Start + 20 * 60_000),
         ]);
 
-        var stats = new StatsService(_events, _materializer);
+        var stats = new StatsService(_materializer);
         var totals = stats.GetDailyTotals(today.AddDays(-1), today.AddDays(1));
 
         Assert.Equal(2, totals.Count);

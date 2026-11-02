@@ -101,14 +101,16 @@ public partial class MainWindow : Window
             _viewModel.TimelineWidth = Math.Max(50, canvas.ActualWidth);
     }
 
-    private void TabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void TabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!ReferenceEquals(e.OriginalSource, sender))
             return;
-        if (ReportTab.IsSelected)
-            _reportViewModel.Load();
-        else if (StatsTab.IsSelected)
-            _statsViewModel.Load();
+        try
+        {
+            if (ReportTab.IsSelected) _reportViewModel.Load();
+            else if (StatsTab.IsSelected) await _statsViewModel.LoadAsync();
+        }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Ошибка загрузки отчёта"); }
     }
 
     // ==================== Отрисовка ScottPlot ====================
@@ -257,7 +259,11 @@ public partial class MainWindow : Window
         Activate();
     }
 
-    private void MenuItem_TogglePause(object sender, RoutedEventArgs e) => _tracking.TogglePause();
+    private async void MenuItem_TogglePause(object sender, RoutedEventArgs e)
+    {
+        try { await _tracking.TogglePauseAsync(); _viewModel.Refresh(); }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Трекинг"); }
+    }
 
     private void MenuItem_Exit(object sender, RoutedEventArgs e)
     {

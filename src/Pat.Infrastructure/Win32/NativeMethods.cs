@@ -58,6 +58,27 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern bool PostThreadMessageW(uint idThread, uint msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("kernel32.dll")]
+    internal static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    internal static extern bool PeekMessageW(out MSG message, IntPtr hwnd, uint min, uint max, uint remove);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")]
+    private static extern bool SwitchDesktop(IntPtr desktop);
+    [DllImport("user32.dll")]
+    private static extern bool CloseDesktop(IntPtr desktop);
+
+    internal static bool IsWorkstationLocked()
+    {
+        var desktop = OpenInputDesktop(0, false, 0x0100);
+        if (desktop == IntPtr.Zero) return true;
+        try { return !SwitchDesktop(desktop); }
+        finally { CloseDesktop(desktop); }
+    }
+
     // --- Снимок процессов (Toolhelp32): один вызов даёт pid + ppid + имя exe ---
 
     internal const uint TH32CS_SNAPPROCESS = 0x00000002;

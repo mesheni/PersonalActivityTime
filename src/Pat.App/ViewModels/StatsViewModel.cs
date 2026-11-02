@@ -25,19 +25,22 @@ public sealed partial class StatsViewModel(
     public List<EventRepository.MetricSampleEntry> MetricSamples { get; private set; } = [];
 
     public event Action? StatsLoaded;
+    private int _loadVersion;
 
     [RelayCommand]
-    private void SetRangeWeek()
+    private async Task SetRangeWeekAsync()
     {
         MonthRange = false;
-        Load();
+        try { await LoadAsync(); }
+        catch (Exception ex) { ActiveSummary = "Не удалось загрузить статистику: " + ex.Message; }
     }
 
     [RelayCommand]
-    private void SetRangeMonth()
+    private async Task SetRangeMonthAsync()
     {
         MonthRange = true;
-        Load();
+        try { await LoadAsync(); }
+        catch (Exception ex) { ActiveSummary = "Не удалось загрузить статистику: " + ex.Message; }
     }
 
     [RelayCommand]
@@ -50,16 +53,22 @@ public sealed partial class StatsViewModel(
             fromUtcMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     }
 
-    public void Load()
+    public async Task LoadAsync()
     {
+        var version = ++_loadVersion;
         var days = MonthRange ? 30 : 7;
         RangeLabel = MonthRange ? "30 дней" : "7 дней";
 
         var rangeStart = DateTime.Now.Date.AddDays(-(days - 1));
-        Days = stats.GetDailyTotals(rangeStart, DateTime.Now.Date.AddDays(1));
-
         var (rangeStartUtc, _) = LocalDay.Bounds(rangeStart);
-        MetricSamples = events.GetMetricSamples(rangeStartUtc, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var endDate = DateTime.Now.Date.AddDays(1);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var snapshot = await Task.Run(() => (
+            Days: stats.GetDailyTotals(rangeStart, endDate),
+            Metrics: events.GetMetricSamples(rangeStartUtc, now)));
+        if (version != _loadVersion) return;
+        Days = snapshot.Days;
+        MetricSamples = snapshot.Metrics;
 
         var totalActive = TimeSpan.FromTicks(Days.Sum(d => d.Active.Ticks));
         ActiveSummary = $"Активно за период: {TimeText.Humanize(totalActive)}";
@@ -82,6 +91,7 @@ public sealed partial class StatsViewModel(
                 : 0,
         }));
 
+        OnPropertyChanged(nameof(Categories));
         StatsLoaded?.Invoke();
     }
 }

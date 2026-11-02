@@ -37,4 +37,8 @@ public enum ActivityEventKind
 
     /// <summary>Активная вкладка браузера от расширения (payload = JSON {url, domain, title, browser}).</summary>
     BrowserVisit = 17,
+
+    TrackingStarted = 18,
+    TrackingStopped = 19,
+    TrackingHeartbeat = 20,
 }

@@ -19,12 +19,24 @@ public sealed class OllamaClient
 
     public OllamaClient(string host)
     {
-        _host = string.IsNullOrWhiteSpace(host) ? "http://127.0.0.1:11434" : host.TrimEnd('/');
+        _host = ValidateHost(host).AbsoluteUri.TrimEnd('/');
+    }
+
+    public static Uri ValidateHost(string? host)
+    {
+        host = string.IsNullOrWhiteSpace(host) ? "http://127.0.0.1:11434" : host.Trim();
+        if (!Uri.TryCreate(host, UriKind.Absolute, out var uri)
+            || (uri.Scheme != "http" && uri.Scheme != "https")
+            || !System.Net.IPAddress.TryParse(uri.Host.Trim('[', ']'), out var address)
+            || !System.Net.IPAddress.IsLoopback(address) || uri.UserInfo.Length != 0
+            || uri.AbsolutePath != "/" || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            throw new ArgumentException("Ollama: укажите локальный IP-адрес, например http://127.0.0.1:11434.", nameof(host));
+        return uri;
     }
 
     private static HttpClient CreateClient()
     {
-        var client = new HttpClient();
+        var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false });
         client.Timeout = TimeSpan.FromSeconds(180);
         return client;
     }

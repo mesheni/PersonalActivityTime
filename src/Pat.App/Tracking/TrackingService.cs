@@ -1,251 +1,160 @@
 using System.IO;
-using System.Threading.Channels;
 using Pat.Core;
 using Pat.Core.Events;
 using Pat.Infrastructure.Collectors;
 using Pat.Infrastructure.Database;
 using Pat.Infrastructure.Logging;
+using Pat.Infrastructure.Settings;
 
 namespace Pat.App.Tracking;
 
-public enum TrackingState
-{
-    Running,
-    Paused,
-}
+public enum TrackingState { Running, Paused }
 
-/// <summary>
-/// Оркестратор: коллекторы → канал → батч-запись в raw_events; периодическая
-/// материализация сессий текущего дня. Пауза останавливает коллекторы и пишет
-/// маркер TrackingPaused, возобновление — TrackingResumed и рестарт коллекторов.
-/// Ошибки записи в БД не глушатся молча: пишутся в error.log.
-/// </summary>
+/// <summary>Serializes lifecycle transitions; only BufferedEventWriter consumes events.</summary>
 public sealed class TrackingService(
-    EventRepository events,
-    SessionMaterializer materializer,
-    ForegroundCollector foreground,
-    IdleMonitor idle,
-    SessionMonitor session,
-    ProcessSnapshotCollector processes,
-    SystemMetricsCollector metrics,
-    FileActivityCollector files)
+    EventRepository events, SessionMaterializer materializer,
+    ForegroundCollector foreground, IdleMonitor idle, SessionMonitor session,
+    ProcessSnapshotCollector processes, SystemMetricsCollector metrics, FileActivityCollector files, SettingsStore settingsStore)
 {
-    private const int ChannelCapacity = 4096;
-
-    private readonly List<IActivityCollector> _collectors = [foreground, idle, session, processes, metrics, files];
-
-    /// <summary>Пока существует, NativeHost браузера не пишет визиты.</summary>
-    private static string PausedMarkerPath => Path.Combine(
-        Pat.Infrastructure.Settings.SettingsStore.AppDataDirectory, "tracking.paused");
-
-    private Channel<ActivityEvent>? _channel;
-    private DropCountingWriter? _countingWriter;
+    private readonly List<IActivityCollector> _collectors = [session, idle, foreground, processes, metrics, files];
+    private readonly SemaphoreSlim _transition = new(1, 1);
+    private BufferedEventWriter? _writer;
     private CancellationTokenSource? _cts;
-    private Task? _writerTask;
-    private Timer? _materializeTimer;
-    private long _reportedDropped;
-    private volatile bool _paused;
-
+    private Task? _periodic;
+    private volatile bool _stopping;
+    private string PausedMarkerPath => Path.Combine(settingsStore.DirectoryPath, "tracking.paused");
     public TrackingState State { get; private set; } = TrackingState.Paused;
-
+    public string? StorageError { get; private set; }
+    public bool IsStarted => _writer is not null;
     public event Action? StateChanged;
+    public event Action? SessionsRefreshed;
+    private static long Now => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     public void Start()
     {
-        _cts = new CancellationTokenSource();
-        _channel = Channel.CreateBounded<ActivityEvent>(
-            new BoundedChannelOptions(ChannelCapacity) { FullMode = BoundedChannelFullMode.DropOldest });
-        _countingWriter = new DropCountingWriter(_channel, ChannelCapacity);
-
-        // Мусорный маркер после падения в паузе не должен глушить NativeHost
-        try { File.Delete(PausedMarkerPath); } catch { /* нет файла — ок */ }
-
-        _writerTask = Task.Run(() => WriterLoopAsync(_channel.Reader, _cts.Token));
-        StartCollectors();
+        if (_writer is not null) return;
+        _stopping = false;
+        File.Delete(PausedMarkerPath);
+        _writer = new BufferedEventWriter(events, Path.Combine(settingsStore.DirectoryPath, "pending-events"));
+        _writer.HealthChanged += ex =>
+        {
+            var error = ex?.Message;
+            if (StorageError == error) return;
+            StorageError = error;
+            StateChanged?.Invoke();
+            if (_writer?.FatalError is not null) _ = PauseAfterDiskFailureAsync();
+        };
+        Emit(ActivityEventKind.TrackingStarted);
+        foreach (var collector in _collectors) collector.Start(_writer.Writer);
         State = TrackingState.Running;
-        _paused = false;
-
-        // Первая материализация — после гарантированного флуша журнала (5 с) плюс запас
-        _materializeTimer = new Timer(_ => OnPeriodicTick(), null, TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(60));
+        _cts = new CancellationTokenSource();
+        _periodic = PeriodicAsync(_cts.Token);
         StateChanged?.Invoke();
+        if (_writer.FatalError is not null) _ = PauseAfterDiskFailureAsync();
+    }
+
+    private async Task PauseAfterDiskFailureAsync()
+    {
+        await _transition.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_stopping) return;
+            foreach (var collector in _collectors) collector.Stop();
+            State = TrackingState.Paused;
+            try { File.WriteAllText(PausedMarkerPath, ""); } catch (IOException) { }
+        }
+        catch (Exception ex) { FileLog.Error.Write(ex); }
+        finally { _transition.Release(); StateChanged?.Invoke(); }
+    }
+
+    private void Emit(ActivityEventKind kind)
+    {
+        if (_writer?.Writer.TryWrite(ActivityEvent.System(kind, Now)) != true)
+            throw new IOException("Журнал событий недоступен. Перезапустите трекер после устранения ошибки диска.");
+    }
+
+    public async Task TogglePauseAsync()
+    {
+        await _transition.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_writer is null || _stopping) return;
+            if (State == TrackingState.Paused)
+            {
+                Emit(ActivityEventKind.TrackingResumed);
+                foreach (var collector in _collectors) collector.Start(_writer.Writer);
+                File.Delete(PausedMarkerPath);
+                State = TrackingState.Running;
+            }
+            else
+            {
+                // Block the independent browser producer before stopping local producers.
+                File.WriteAllText(PausedMarkerPath, "");
+                foreach (var collector in _collectors) collector.Stop();
+                Emit(ActivityEventKind.TrackingPaused);
+                State = TrackingState.Paused;
+            }
+            await FlushAndMaterializeAsync().ConfigureAwait(false);
+        }
+        finally { _transition.Release(); StateChanged?.Invoke(); }
+    }
+
+    public async Task RefreshSessionsAsync()
+    {
+        await _transition.WaitAsync().ConfigureAwait(false);
+        try { if (!_stopping) await FlushAndMaterializeAsync().ConfigureAwait(false); }
+        finally { _transition.Release(); }
+    }
+
+    private async Task FlushAndMaterializeAsync()
+    {
+        if (_writer is null) return;
+        await _writer.FlushAsync().ConfigureAwait(false);
+        var (start, _) = LocalDay.Today();
+        await Task.Run(() => materializer.Refresh(start, Now)).ConfigureAwait(false);
+        SessionsRefreshed?.Invoke();
+    }
+
+    private async Task PeriodicAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                await _transition.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    if (_stopping) return;
+                    Emit(ActivityEventKind.TrackingHeartbeat);
+                    await FlushAndMaterializeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex) { FileLog.Error.Write(ex); }
+                finally { _transition.Release(); }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
     }
 
     public async Task StopAsync()
     {
-        _materializeTimer?.Dispose();
-        _materializeTimer = null;
-
-        foreach (var collector in _collectors)
-            collector.Stop();
-
-        if (_cts is { } cts)
+        _stopping = true;
+        if (_cts is not null) await _cts.CancelAsync().ConfigureAwait(false);
+        if (_periodic is not null) await _periodic.ConfigureAwait(false);
+        await _transition.WaitAsync().ConfigureAwait(false);
+        try
         {
-            cts.Cancel();
-            if (_writerTask is { } task)
-            {
-                try { await task.ConfigureAwait(false); } catch (OperationCanceledException) { }
-            }
-            cts.Dispose();
+            if (_writer is null) return;
+            foreach (var collector in _collectors) collector.Stop();
+            try { Emit(ActivityEventKind.TrackingStopped); await FlushAndMaterializeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { FileLog.Error.Write(ex); } // durable spool is replayed next launch
+            try { await _writer.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { FileLog.Error.Write(ex); }
+            _writer = null;
+            _cts?.Dispose();
             _cts = null;
-        }
-        _channel = null;
-        _countingWriter = null;
-        State = TrackingState.Paused;
-
-        // Финальная материализация: сессии в актуальном виде до следующего запуска
-        SafeMaterialize();
-    }
-
-    public void TogglePause()
-    {
-        if (_paused)
-        {
-            EmitToRunningChannel(ActivityEvent.System(ActivityEventKind.TrackingResumed,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
-            try { File.Delete(PausedMarkerPath); } catch { /* нет файла — ок */ }
-            StartCollectors();
-            _paused = false;
-            State = TrackingState.Running;
-        }
-        else
-        {
-            EmitToRunningChannel(ActivityEvent.System(ActivityEventKind.TrackingPaused,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
-            foreach (var collector in _collectors)
-                collector.Stop();
-            FlushNow();
-            try { File.WriteAllText(PausedMarkerPath, string.Empty); } catch { /* не критично */ }
-            _paused = true;
             State = TrackingState.Paused;
         }
-        StateChanged?.Invoke();
-    }
-
-    /// <summary>Принудительная материализация сессий (после смены настроек, по кнопке «Обновить»).</summary>
-    public void RefreshSessions()
-    {
-        SafeMaterialize();
-        SessionsRefreshed?.Invoke();
-    }
-
-    public event Action? SessionsRefreshed;
-
-    private void StartCollectors()
-    {
-        if (_countingWriter is not { } writer)
-            return;
-        foreach (var collector in _collectors)
-            collector.Start(writer);
-    }
-
-    private void EmitToRunningChannel(ActivityEvent ev)
-    {
-        _countingWriter?.TryWrite(ev);
-        FlushNow();
-    }
-
-    private void OnPeriodicTick()
-    {
-        SafeMaterialize();
-
-        // DropOldest теряет события молча — сообщаем о потерях, пока они происходят
-        if (_countingWriter is { } writer)
-        {
-            var dropped = writer.Dropped;
-            if (dropped > _reportedDropped)
-            {
-                FileLog.Error.Write($"Канал переполнен: потеряно ~{dropped - _reportedDropped} событий " +
-                                    $"(всего за сессию: {dropped}).");
-                _reportedDropped = dropped;
-            }
-        }
-    }
-
-    private async Task WriterLoopAsync(ChannelReader<ActivityEvent> reader, CancellationToken ct)
-    {
-        var flush = new PeriodicTimer(TimeSpan.FromSeconds(5));
-        var batch = new List<ActivityEvent>(256);
-        try
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                await flush.WaitForNextTickAsync(ct).ConfigureAwait(false);
-                while (reader.TryRead(out var ev))
-                    batch.Add(ev);
-                if (batch.Count > 0)
-                {
-                    try { events.AppendBatch(batch); }
-                    catch (Exception ex) { FileLog.Error.Write($"Ошибка записи батча в БД ({batch.Count} событий): {ex}"); }
-                    batch.Clear();
-                }
-            }
-        }
-        catch (OperationCanceledException) { }
-
-        // Финальный дренаж перед выходом: падение здесь роняло приложение при выходе
-        try
-        {
-            while (reader.TryRead(out var ev))
-                batch.Add(ev);
-            if (batch.Count > 0)
-                events.AppendBatch(batch);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Error.Write($"Не удалось дозаписать {batch.Count} событий при выходе: {ex}");
-        }
-    }
-
-    private void FlushNow()
-    {
-        if (_channel is null)
-            return;
-        var batch = new List<ActivityEvent>();
-        while (_channel.Reader.TryRead(out var ev))
-            batch.Add(ev);
-        if (batch.Count > 0)
-        {
-            try { events.AppendBatch(batch); }
-            catch (Exception ex) { FileLog.Error.Write($"Ошибка записи в БД ({batch.Count} событий): {ex}"); }
-        }
-    }
-
-    private void SafeMaterialize()
-    {
-        if (_paused)
-            return;
-        try
-        {
-            var (dayStart, _) = LocalDay.Today();
-            materializer.Refresh(dayStart, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        }
-        catch (Exception ex)
-        {
-            FileLog.Error.Write($"Материализация не удалась: {ex}");
-        }
-    }
-
-    /// <summary>
-    /// Обёртка над writer'ом канала: DropOldest теряет события без уведомления,
-    /// поэтому потери оцениваем по заполненности канала на момент записи.
-    /// Оценка приблизительная при конкурентной записи, для диагностики этого достаточно.
-    /// </summary>
-    private sealed class DropCountingWriter(Channel<ActivityEvent> channel, int capacity) : ChannelWriter<ActivityEvent>
-    {
-        private long _dropped;
-
-        public long Dropped => Interlocked.Read(ref _dropped);
-
-        public override bool TryWrite(ActivityEvent item)
-        {
-            if (channel.Reader.Count >= capacity)
-                Interlocked.Increment(ref _dropped);
-            return channel.Writer.TryWrite(item);
-        }
-
-        public override bool TryComplete(Exception? error = null) => channel.Writer.TryComplete(error);
-
-        public override ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken = default) =>
-            channel.Writer.WaitToWriteAsync(cancellationToken);
+        finally { _transition.Release(); }
     }
 }

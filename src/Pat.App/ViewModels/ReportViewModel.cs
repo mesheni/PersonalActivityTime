@@ -29,7 +29,6 @@ public sealed class NarrativeBlockVm
 /// LLM через Ollama (выключено по умолчанию, только 127.0.0.1).
 /// </summary>
 public sealed partial class ReportViewModel(
-    SessionRepository sessions,
     EventRepository events,
     SessionMaterializer materializer,
     SettingsStore settingsStore) : ObservableObject
@@ -63,7 +62,8 @@ public sealed partial class ReportViewModel(
         s.OllamaEnabled = OllamaEnabled;
         s.OllamaHost = string.IsNullOrWhiteSpace(OllamaHost) ? "http://127.0.0.1:11434" : OllamaHost.Trim();
         s.OllamaModel = OllamaModel.Trim();
-        settingsStore.Save(s);
+        try { settingsStore.Save(s); }
+        catch (Exception ex) { OllamaStatus = ex.Message; return; }
         OllamaStatus = "Настройки сохранены.";
     }
 
@@ -71,13 +71,17 @@ public sealed partial class ReportViewModel(
     private async Task CheckOllamaAsync()
     {
         OllamaStatus = "Проверяю…";
-        var client = new OllamaClient(OllamaHost);
+        OllamaClient client;
+        try { client = new OllamaClient(OllamaHost); }
+        catch (ArgumentException ex) { OllamaStatus = ex.Message; return; }
         if (!await client.IsAvailableAsync().ConfigureAwait(true))
         {
             OllamaStatus = $"Ollama недоступна на {OllamaHost}. Установите с ollama.com и запустите «ollama serve».";
             return;
         }
-        var models = await client.ListModelsAsync().ConfigureAwait(true);
+        string[] models;
+        try { models = await client.ListModelsAsync().ConfigureAwait(true); }
+        catch (Exception ex) { OllamaStatus = ex.Message; return; }
         OllamaStatus = models.Length == 0
             ? "Сервер отвечает, но моделей нет. Скачайте модель: ollama pull llama3.2"
             : $"Сервер отвечает. Модели: {string.Join(", ", models)}";
@@ -142,7 +146,7 @@ public sealed partial class ReportViewModel(
     {
         var (dayStart, dayEnd) = LocalDay.Today();
         var rules = materializer.CurrentRules();
-        var rows = sessions.GetRange(dayStart, dayEnd, rules);
+        var rows = materializer.BuildRows(dayStart, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         var segments = rows.Select(r => new ActivitySegment(
             r.StartedUtcMs, r.EndedUtcMs, r.AppPath,
             r.AppName ?? "(исключено)", r.WindowTitle, r.IsIdle, r.IsExcluded)).ToList();

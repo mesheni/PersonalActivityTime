@@ -7,7 +7,7 @@ using Pat.Core.Sessionization;
 using Pat.Infrastructure.Database;
 using Pat.Infrastructure.Settings;
 
-// Audit diagnostics: prints observed defects, not a replacement for regression tests.
+// Audit diagnostics: compare observed behavior with the corrected contracts.
 // Uses synthetic data and a new temporary directory; never loads user settings/data.
 var root = Path.Combine(Path.GetTempPath(), "pat-audit-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -35,7 +35,7 @@ var (dayStart, dayEnd) = LocalDay.Bounds(today);
 var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 var statsDb = Db("stats");
 statsDb.Events.AppendBatch([F(dayStart)]);
-var totals = new StatsService(statsDb.Events, statsDb.Materializer).GetDailyTotals(today, today.AddDays(1)).Single();
+var totals = new StatsService(statsDb.Materializer).GetDailyTotals(today, today.AddDays(1)).Single();
 Show("A03 today's active milliseconds", totals.Active.TotalMilliseconds, "<= " + (now - dayStart + 1000));
 
 var midnightDb = Db("midnight");
@@ -52,8 +52,8 @@ Show("A05 ongoing foreground from 21:00: rows after midnight", lookbackDb.Sessio
 var exportDb = Db("export");
 var (yesterdayStart, _) = LocalDay.Bounds(today.AddDays(-1));
 exportDb.Events.AppendBatch([F(yesterdayStart + 60 * 60_000), S(ActivityEventKind.TrackingPaused, yesterdayStart + 120 * 60_000)]);
-var yesterdayStats = new StatsService(exportDb.Events, exportDb.Materializer).GetDailyTotals(today.AddDays(-1), today).Single();
-Show("A06 historical stats minutes / export-source rows", $"{yesterdayStats.Active.TotalMinutes} / {exportDb.Sessions.GetRange(yesterdayStart, dayStart, CategoryRuleSet.CreateDefault()).Count}", "60 / 1");
+var yesterdayStats = new StatsService(exportDb.Materializer).GetDailyTotals(today.AddDays(-1), today).Single();
+Show("A06 historical stats minutes / export-source rows", $"{yesterdayStats.Active.TotalMinutes} / {exportDb.Materializer.BuildRows(yesterdayStart, dayStart).Count}", "60 / 1");
 
 var rollbackDb = Db("rollback");
 using (var connection = rollbackDb.Factory.Open())
@@ -72,7 +72,8 @@ catch (SqliteException ex)
     Show("A07 append after transaction rollback", $"SQLite {ex.SqliteErrorCode}/{ex.SqliteExtendedErrorCode}: {ex.Message}", "success");
 }
 
-var exitGap = engine.Build([F(0), F(600_000, "new run")], 660_000);
+var exitGap = engine.Build([S(ActivityEventKind.TrackingStarted, 0), F(0), S(ActivityEventKind.TrackingStopped, 60_000),
+    S(ActivityEventKind.TrackingStarted, 600_000), F(600_000, "new run"), S(ActivityEventKind.TrackingStopped, 660_000)], 660_000);
 Show("A08 active ms across unrecorded shutdown at 60s and restart at 600s", exitGap.Sum(x => x.EndUtcMs - x.StartUtcMs), 120_000);
 
 var eastern = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");

@@ -20,7 +20,8 @@ public sealed class SqliteConnectionFactory
 
     public SqliteConnection Open()
     {
-        var connection = new SqliteConnection($"Data Source={DatabasePath}");
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = DatabasePath, DefaultTimeout = 5 }.ToString());
         connection.Open();
         using (var command = connection.CreateCommand())
         {
@@ -51,12 +52,14 @@ public sealed class MigrationRunner(SqliteConnectionFactory factory)
 
         foreach (var (version, sql) in DiscoverMigrations())
         {
-            var applied = connection.ExecuteScalar<long?>("SELECT COUNT(*) FROM schema_migrations WHERE version = @v",
-                new { v = version });
-            if (applied > 0)
-                continue;
-
             using var tx = connection.BeginTransaction();
+            var applied = connection.ExecuteScalar<long?>("SELECT COUNT(*) FROM schema_migrations WHERE version = @v",
+                new { v = version }, tx);
+            if (applied > 0)
+            {
+                tx.Commit();
+                continue;
+            }
             connection.Execute(sql, transaction: tx);
             connection.Execute("INSERT INTO schema_migrations(version, applied_utc) VALUES (@v, @now)",
                 new { v = version, now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }, tx);

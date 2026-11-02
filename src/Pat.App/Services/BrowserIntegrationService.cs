@@ -40,7 +40,7 @@ public sealed partial class BrowserIntegrationService
             return (false, "ID расширения должен быть строкой из 32 латинских букв (a–p). Скопируйте его на странице chrome://extensions.");
 
         var hostExe = Path.Combine(
-            Path.GetDirectoryName(Environment.ProcessPath) ?? ".", "Pat.NativeHost.exe");
+            AppContext.BaseDirectory, "nativehost", "Pat.NativeHost.exe");
         if (!File.Exists(hostExe))
             return (false, $"Не найден {hostExe}. Соберите решение целиком: dotnet build.");
 

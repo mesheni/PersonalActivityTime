@@ -19,6 +19,7 @@ public sealed class SessionMonitor : IActivityCollector
         }
         SystemEvents.SessionSwitch += OnSessionSwitch;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        Emit(Win32.NativeMethods.IsWorkstationLocked() ? ActivityEventKind.SessionLocked : ActivityEventKind.SessionUnlocked);
     }
 
     void IActivityCollector.Stop()
@@ -33,12 +34,10 @@ public sealed class SessionMonitor : IActivityCollector
 
     private void Emit(ActivityEventKind kind)
     {
-        ChannelWriter<ActivityEvent>? writer;
         lock (_gate)
         {
-            writer = _writer;
+            _writer?.TryWrite(ActivityEvent.System(kind, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
         }
-        writer?.TryWrite(ActivityEvent.System(kind, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
     }
 
     private void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)

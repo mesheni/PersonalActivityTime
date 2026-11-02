@@ -108,20 +108,20 @@ public sealed class SessionizationEngineTests
     }
 
     [Fact]
-    public void AdjacentSameAppAndTitle_Merged()
+    public void ShortTrackingPause_IsNotCountedAsActivity()
     {
-        // Короткая пауза трекинга (< MergeGap) не рвёт сессию
+        // Even a short explicit pause must remain a gap in measured time.
         var segments = Build(
             ActivityEvent.Foreground(Ms(0), @"C:\rider.exe", "rider64", "Parser.cs — Wafer — Rider"),
             ActivityEvent.System(ActivityEventKind.TrackingPaused, Ms(10)),
             ActivityEvent.System(ActivityEventKind.TrackingResumed, Ms(10) + 3000),
             ActivityEvent.Foreground(Ms(50), @"C:\chrome.exe", "chrome", "GitHub"));
 
-        // rider 0–10 и 10:03–50 склеились, chrome отдельно
-        Assert.Equal(2, segments.Count);
+        Assert.Equal(3, segments.Count);
         Assert.Equal("rider64", segments[0].AppName);
-        Assert.Equal(Ms(50), segments[0].EndUtcMs);
-        Assert.Equal("chrome", segments[1].AppName);
+        Assert.Equal(Ms(10), segments[0].EndUtcMs);
+        Assert.Equal(Ms(10) + 3000, segments[1].StartUtcMs);
+        Assert.Equal("chrome", segments[2].AppName);
     }
 
     [Fact]

@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using Pat.Core;
 using Pat.Core.Events;
 using Pat.Infrastructure.Win32;
+using Pat.Infrastructure.Settings;
 
 namespace Pat.Infrastructure.Collectors;
 
@@ -14,7 +15,7 @@ namespace Pat.Infrastructure.Collectors;
 /// Payload: {"pid":..,"ppid":..,"exe":"..","parent":".."} — имя родителя денормализовано
 /// из живого снимка, поэтому дерево процессов строится из журнала без пересборки.
 /// </summary>
-public sealed class ProcessSnapshotCollector : IActivityCollector
+public sealed class ProcessSnapshotCollector(SettingsStore settingsStore) : IActivityCollector
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3);
 
@@ -43,7 +44,7 @@ public sealed class ProcessSnapshotCollector : IActivityCollector
 
     void IActivityCollector.Stop()
     {
-        _timer?.Dispose();
+        if (_timer is { } timer) timer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _timer = null;
         lock (_gate)
         {
@@ -72,11 +73,13 @@ public sealed class ProcessSnapshotCollector : IActivityCollector
             var isFirstSnapshot = previous.Count == 0;
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var current = snapshot.ToDictionary(e => e.Pid, e => (e.Exe, e.Ppid));
+            if (_writer != writer) return;
 
             if (!isFirstSnapshot)
             {
                 foreach (var (pid, exe, ppid) in snapshot)
                 {
+                    if (PrivacyPolicy.IsExcluded(settingsStore.Settings, exe)) continue;
                     if (!previous.TryGetValue(pid, out var old))
                     {
                         // новый процесс; имя родителя берём из текущего (живого) снимка
@@ -94,6 +97,7 @@ public sealed class ProcessSnapshotCollector : IActivityCollector
 
                 foreach (var (pid, old) in previous)
                 {
+                    if (PrivacyPolicy.IsExcluded(settingsStore.Settings, old.Exe)) continue;
                     if (!current.ContainsKey(pid))
                         writer.TryWrite(Journal(ActivityEventKind.ProcessStopped, now, pid, old.Ppid, old.Exe, null));
                 }
@@ -103,9 +107,10 @@ public sealed class ProcessSnapshotCollector : IActivityCollector
         }
     }
 
-    private static ActivityEvent Journal(
+    private ActivityEvent Journal(
         ActivityEventKind kind, long ts, uint pid, uint ppid, string exe, string? parent) =>
-        ActivityEvent.Journal(kind, ts, JsonSerializer.Serialize(new ProcessPayload(pid, ppid, exe, parent), PayloadJson));
+        ActivityEvent.Journal(kind, ts, JsonSerializer.Serialize(new ProcessPayload(pid, ppid, exe,
+            PrivacyPolicy.IsExcluded(settingsStore.Settings, parent) ? null : parent), PayloadJson));
 
     /// <summary>null, если снимок не удался (например, временный отказ API) — просто пропускаем такт.</summary>
     private static List<(uint Pid, string Exe, uint Ppid)>? TakeSnapshot()

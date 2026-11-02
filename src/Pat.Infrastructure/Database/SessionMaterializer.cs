@@ -15,43 +15,47 @@ public sealed class SessionMaterializer(
     SessionRepository sessions,
     SettingsStore settingsStore)
 {
-    /// <summary>
-    /// Журнал читается с запасом назад: событие IdleBegan/ForegroundChanged до полуночи
-    /// нужно, чтобы активность после 00:00 не потерялась. 2 часа перекрывают любой
-    /// настраиваемый порог простоя.
-    /// </summary>
-    public static readonly long LookbackMs = TimeSpan.FromHours(2).Ticks / TimeSpan.TicksPerMillisecond;
-
+    private readonly object _gate = new();
     private readonly SessionizationEngine _engine = new();
 
     public CategoryRuleSet CurrentRules()
     {
         var settings = settingsStore.Settings;
-        return settings.CategoryRules is { Count: > 0 } rules
+        return settings.CategoryRules is { } rules
             ? new CategoryRuleSet(rules)
             : CategoryRuleSet.CreateDefault();
     }
 
-    public void Refresh(long fromUtcMs, long nowUtcMs)
+    public IReadOnlyList<ActivitySegment> BuildRange(long fromUtcMs, long toUtcMs)
     {
-        var journal = events.GetRange(fromUtcMs - LookbackMs, nowUtcMs + 1);
-        var segments = _engine.Build(journal, nowUtcMs);
+        if (toUtcMs <= fromUtcMs) return [];
+        var journal = events.GetReplayRange(fromUtcMs, toUtcMs + 1);
+        return _engine.Build(journal, toUtcMs)
+            .Where(s => s.EndUtcMs > fromUtcMs && s.StartUtcMs < toUtcMs)
+            .Select(s => s.ClipTo(fromUtcMs, toUtcMs))
+            .Where(s => s.EndUtcMs > s.StartUtcMs).ToList();
+    }
+
+    public List<SessionRow> BuildRows(long fromUtcMs, long toUtcMs)
+    {
         var rules = CurrentRules();
 
-        var rows = segments.Select(seg =>
+        return BuildRange(fromUtcMs, toUtcMs).Select(seg =>
         {
-            var (category, _) = seg.IsIdle
-                ? ("Idle", "")
+            var (category, color) = seg.IsIdle
+                ? ("Idle", "#4B5563")
                 : seg.IsExcluded
-                    ? ("(исключено)", "")
+                    ? ("(исключено)", "#374151")
                     : rules.Classify(seg.AppName, seg.AppPath, seg.WindowTitle);
             var project = IdeTitleExtractor.Extract(seg.WindowTitle)?.Project;
-            var clipped = seg.ClipTo(fromUtcMs, long.MaxValue);
             return new SessionRow(
-                clipped.StartUtcMs, clipped.EndUtcMs, seg.AppPath, seg.AppName, seg.WindowTitle,
-                project, category, "", seg.IsIdle, seg.IsExcluded);
+                seg.StartUtcMs, seg.EndUtcMs, seg.AppPath, seg.AppName, seg.WindowTitle,
+                project, category, color, seg.IsIdle, seg.IsExcluded);
         }).ToList();
+    }
 
-        sessions.ReplaceFrom(fromUtcMs, rows);
+    public void Refresh(long fromUtcMs, long nowUtcMs)
+    {
+        lock (_gate) sessions.ReplaceFrom(fromUtcMs, BuildRows(fromUtcMs, nowUtcMs));
     }
 }

@@ -24,6 +24,7 @@ public sealed class IdleMonitor(SettingsStore settingsStore) : IActivityCollecto
     private Timer? _timer;
     private bool _idleNotified;
     private bool _sessionBlocked;
+    private long _validFrom;
 
     void IActivityCollector.Start(ChannelWriter<ActivityEvent> writer)
     {
@@ -31,6 +32,8 @@ public sealed class IdleMonitor(SettingsStore settingsStore) : IActivityCollecto
         {
             _writer = writer;
             _idleNotified = false;
+            _sessionBlocked = NativeMethods.IsWorkstationLocked();
+            _validFrom = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
         SystemEvents.SessionSwitch += OnSessionSwitch;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
@@ -39,7 +42,7 @@ public sealed class IdleMonitor(SettingsStore settingsStore) : IActivityCollecto
 
     void IActivityCollector.Stop()
     {
-        _timer?.Dispose();
+        if (_timer is { } timer) timer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _timer = null;
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
@@ -91,11 +94,9 @@ public sealed class IdleMonitor(SettingsStore settingsStore) : IActivityCollecto
         lock (_gate)
         {
             _sessionBlocked = false;
-            if (_idleNotified)
-            {
-                _idleNotified = false;
-                _writer?.TryWrite(ActivityEvent.System(ActivityEventKind.IdleEnded, nowUtcMs));
-            }
+            _validFrom = nowUtcMs;
+            _idleNotified = false;
+            _writer?.TryWrite(ActivityEvent.System(ActivityEventKind.IdleEnded, nowUtcMs));
         }
     }
 
@@ -117,17 +118,18 @@ public sealed class IdleMonitor(SettingsStore settingsStore) : IActivityCollecto
 
         lock (_gate)
         {
+            if (_writer != writer || _sessionBlocked) return;
             if (!_idleNotified && idleMs >= thresholdMs)
             {
                 _idleNotified = true;
                 // Событие датировано моментом последнего ввода, а не моментом обнаружения
-                writer.TryWrite(ActivityEvent.System(ActivityEventKind.IdleBegan, now - idleMs));
+                writer.TryWrite(ActivityEvent.System(ActivityEventKind.IdleBegan, Math.Max(_validFrom, now - idleMs)));
             }
             else if (_idleNotified && idleMs < thresholdMs)
             {
                 _idleNotified = false;
                 // Первый ввод после простоя
-                writer.TryWrite(ActivityEvent.System(ActivityEventKind.IdleEnded, now - idleMs));
+                writer.TryWrite(ActivityEvent.System(ActivityEventKind.IdleEnded, Math.Max(_validFrom, now - idleMs)));
             }
         }
     }
@@ -139,6 +141,6 @@ public sealed class IdleMonitor(SettingsStore settingsStore) : IActivityCollecto
             return 0;
         // Environment.TickCount (int) и dwTime (uint) мотаются одинаково, поэтому
         // разность int корректна через wrap (аптайм > 24.9 дней не ломает расчёт)
-        return Environment.TickCount - unchecked((int)info.dwTime);
+        return unchecked((uint)Environment.TickCount - info.dwTime);
     }
 }

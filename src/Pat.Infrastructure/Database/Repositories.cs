@@ -18,14 +18,14 @@ public sealed record SessionRow(
     bool IsExcluded);
 
 /// <summary>
-/// Кэш соответствия exe-путь → id в applications. Используется только со стороны писателя
-/// (один поток), поэтому словарь без блокировок.
+/// Кэш соответствия exe-путь → id в applications в пределах одной транзакции.
+/// Экземпляр нельзя переносить между транзакциями, включая откат.
 /// </summary>
 public sealed class AppRegistry
 {
     private readonly Dictionary<string, long> _byPath = new(StringComparer.OrdinalIgnoreCase);
 
-    public long GetOrAdd(SqliteConnection connection, string exePath, string exeName, long nowUtcMs)
+    public long GetOrAdd(SqliteConnection connection, string exePath, string exeName, long nowUtcMs, SqliteTransaction? transaction = null)
     {
         if (_byPath.TryGetValue(exePath, out var id))
             return id;
@@ -37,7 +37,7 @@ public sealed class AppRegistry
             ON CONFLICT(exe_path) DO NOTHING
             RETURNING id
             """,
-            new { path = exePath, name = exeName, now = nowUtcMs });
+            new { path = exePath, name = exeName, now = nowUtcMs }, transaction);
         if (inserted is { } newId)
         {
             _byPath[exePath] = newId;
@@ -45,7 +45,7 @@ public sealed class AppRegistry
         }
 
         var existing = connection.ExecuteScalar<long>(
-            "SELECT id FROM applications WHERE exe_path = @path", new { path = exePath });
+            "SELECT id FROM applications WHERE exe_path = @path", new { path = exePath }, transaction);
         _byPath[exePath] = existing;
         return existing;
     }
@@ -59,20 +59,26 @@ public sealed class EventRepository(SqliteConnectionFactory factory)
         PropertyNameCaseInsensitive = true,
     };
 
-    private readonly AppRegistry _apps = new();
-
-    public void AppendBatch(IReadOnlyList<ActivityEvent> events)
+    public void AppendBatch(IReadOnlyList<ActivityEvent> events, string? batchId = null)
     {
         if (events.Count == 0)
             return;
 
         using var connection = factory.Open();
         using var tx = connection.BeginTransaction();
+        if (batchId is not null && connection.Execute(
+            "INSERT INTO committed_batches(id, committed_utc) VALUES (@batchId, @now) ON CONFLICT(id) DO NOTHING",
+            new { batchId, now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }, tx) == 0)
+        {
+            tx.Commit();
+            return;
+        }
+        var apps = new AppRegistry(); // transaction-local: never retains rolled-back IDs
         foreach (var ev in events)
         {
             long? appId = null;
             if (ev.AppPath is { } path)
-                appId = _apps.GetOrAdd(connection, path, ev.AppName ?? path, ev.TimestampUtcMs);
+                appId = apps.GetOrAdd(connection, path, ev.AppName ?? path, ev.TimestampUtcMs, tx);
 
             connection.Execute(
                 "INSERT INTO raw_events (ts_utc, kind, app_id, window_title, payload) VALUES (@ts, @kind, @appId, @title, @payload)",
@@ -91,17 +97,34 @@ public sealed class EventRepository(SqliteConnectionFactory factory)
             FROM raw_events e
             LEFT JOIN applications a ON a.id = e.app_id
             WHERE e.ts_utc >= @from AND e.ts_utc < @to
-            ORDER BY e.ts_utc
+            ORDER BY e.ts_utc, e.id
             """,
             new { from = fromUtcMs, to = toUtcMs })
             .Select(r => new ActivityEvent(r.Ts, (ActivityEventKind)r.Kind, r.ExePath, r.ExeName, r.Title))
             .ToList();
     }
 
+    /// <summary>Replay from the last run boundary, or all legacy state events.</summary>
+    public List<ActivityEvent> GetReplayRange(long fromUtcMs, long toUtcMs)
+    {
+        using var connection = factory.Open();
+        var start = connection.ExecuteScalar<long?>(
+            "SELECT MAX(ts_utc) FROM raw_events WHERE kind = 18 AND ts_utc <= @from", new { from = fromUtcMs }) ?? long.MinValue;
+        return connection.Query<(long Ts, int Kind, string? ExePath, string? ExeName, string? Title)>(
+            """
+            SELECT e.ts_utc, e.kind, a.exe_path, a.exe_name, e.window_title
+            FROM raw_events e LEFT JOIN applications a ON a.id = e.app_id
+            WHERE e.ts_utc >= @start AND e.ts_utc < @to
+              AND (e.kind BETWEEN 1 AND 9 OR e.kind BETWEEN 18 AND 20)
+            ORDER BY e.ts_utc, e.id
+            """, new { start, to = toUtcMs })
+            .Select(r => new ActivityEvent(r.Ts, (ActivityEventKind)r.Kind, r.ExePath, r.ExeName, r.Title)).ToList();
+    }
+
     /// <summary>
     /// Удалить журнал и сессии старше порога (строго: ts_utc &lt; cutoff, ended_utc &lt; cutoff).
-    /// Возвращает число удалённых строк. После удаления WAL усекается, чтобы место
-    /// вернулось на диск, а не оставалось зарезервированным.
+    /// Возвращает число удалённых строк. Checkpoint усекает WAL; свободные страницы
+    /// основного файла переиспользуются SQLite, без обещания уменьшить его размер.
     /// </summary>
     public (long Events, long Sessions) DeleteOlderThan(long cutoffUtcMs)
     {
@@ -111,6 +134,7 @@ public sealed class EventRepository(SqliteConnectionFactory factory)
             new { cutoff = cutoffUtcMs }, tx);
         var sessions = connection.Execute("DELETE FROM sessions WHERE ended_utc < @cutoff",
             new { cutoff = cutoffUtcMs }, tx);
+        connection.Execute("DELETE FROM applications WHERE id NOT IN (SELECT app_id FROM raw_events WHERE app_id IS NOT NULL) AND id NOT IN (SELECT app_id FROM sessions WHERE app_id IS NOT NULL)", transaction: tx);
         tx.Commit();
 
         try { connection.Execute("PRAGMA wal_checkpoint(TRUNCATE);"); }
@@ -271,18 +295,19 @@ public sealed class EventRepository(SqliteConnectionFactory factory)
 /// <summary>Хранение материализованных сессий: замещаем всё, что пересекается с окном.</summary>
 public sealed class SessionRepository(SqliteConnectionFactory factory)
 {
-    private readonly AppRegistry _apps = new();
-
     public void ReplaceFrom(long fromUtcMs, IReadOnlyList<SessionRow> rows)
     {
         using var connection = factory.Open();
         using var tx = connection.BeginTransaction();
+        var apps = new AppRegistry();
         connection.Execute("DELETE FROM sessions WHERE ended_utc > @from", new { from = fromUtcMs }, tx);
         foreach (var row in rows)
         {
+            if (row.EndedUtcMs <= row.StartedUtcMs)
+                throw new ArgumentException("Session end must be after its start.", nameof(rows));
             long? appId = null;
             if (row.AppPath is { } path)
-                appId = _apps.GetOrAdd(connection, path, row.AppName ?? path, row.StartedUtcMs);
+                appId = apps.GetOrAdd(connection, path, row.AppName ?? path, row.StartedUtcMs, tx);
 
             connection.Execute(
                 """
@@ -342,11 +367,11 @@ public sealed class SessionRepository(SqliteConnectionFactory factory)
             else
             {
                 var classified = rules.Classify(r.exe_name, r.exe_path, r.window_title);
-                category = r.category_name;
+                category = classified.Category;
                 color = classified.ColorHex;
             }
             return new SessionRow(
-                r.started_utc, r.ended_utc,
+                Math.Max(fromUtcMs, r.started_utc), Math.Min(toUtcMs, r.ended_utc),
                 r.exe_path, isIdle ? "Idle" : r.exe_name ?? "(исключено)",
                 r.window_title, r.project,
                 category, color, isIdle, isExcluded);

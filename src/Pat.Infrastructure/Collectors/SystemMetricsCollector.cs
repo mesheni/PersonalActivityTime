@@ -46,7 +46,7 @@ public sealed class SystemMetricsCollector : IActivityCollector
 
     void IActivityCollector.Stop()
     {
-        _timer?.Dispose();
+        if (_timer is { } timer) timer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _timer = null;
         lock (_gate)
         {

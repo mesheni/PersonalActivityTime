@@ -19,7 +19,7 @@ public sealed class CategoryRuleSet
     {
         _rules = (rules ?? [])
             .Select(r => new CompiledRule(
-                new Regex(r.Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
+                new Regex(r.Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50)),
                 r.Field, r.Category, r.ColorHex, r.Priority))
             .OrderBy(r => r.Priority)
             .ToList();
@@ -36,8 +36,12 @@ public sealed class CategoryRuleSet
                 RuleField.WindowTitle => windowTitle,
                 _ => null,
             };
-            if (value is not null && rule.Regex.IsMatch(value))
-                return (rule.Category, rule.ColorHex);
+            try
+            {
+                if (value is not null && rule.Regex.IsMatch(value))
+                    return (rule.Category, rule.ColorHex);
+            }
+            catch (RegexMatchTimeoutException) { /* A rule must not stall tracking or the UI. */ }
         }
         return (FallbackCategory, FallbackColorHex);
     }

@@ -11,11 +11,11 @@ namespace Pat.App.Services;
 /// Формат строит Pat.Core.Export, здесь только выбор файла и запись (UTF-8 с BOM,
 /// чтобы Excel корректно открыл кириллицу).
 /// </summary>
-public sealed class ExportService(SessionRepository sessions, SessionMaterializer materializer)
+public sealed class ExportService(SessionMaterializer materializer)
 {
     public void ExportRange(string filePrefix, long fromUtcMs, long toUtcMs)
     {
-        var rows = sessions.GetRange(fromUtcMs, toUtcMs, materializer.CurrentRules());
+        var rows = materializer.BuildRows(fromUtcMs, Math.Min(toUtcMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
         var data = rows.Select(r => new ExportSession(
             r.StartedUtcMs, r.EndedUtcMs,
             r.AppName ?? "(исключено)", r.WindowTitle, r.Project,

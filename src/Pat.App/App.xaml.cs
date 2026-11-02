@@ -16,10 +16,14 @@ public partial class App : Application
 {
     private IServiceProvider _services = null!;
     private System.Threading.Timer? _retentionTimer;
+    private Mutex? _singleInstance;
+    private bool _ownsInstance;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        _singleInstance = new Mutex(true, "Local\\PersonalActivityTime", out _ownsInstance);
+        if (!_ownsInstance) { Shutdown(); return; }
 
         DispatcherUnhandledException += (_, args) => LogError(args.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
@@ -30,12 +34,13 @@ public partial class App : Application
 
         var settingsStore = new SettingsStore();
         settingsStore.Load();
+        if (settingsStore.LastError is { } settingsError) MessageBox.Show(settingsError +
+            (settingsStore.HasUsableSettings ? "" : " Трекинг остановлен до сохранения настроек."), "Восстановление настроек");
         services.AddSingleton(settingsStore);
 
         // Настройка автозапуска — источник истины: при каждом старте чиним запись
         // в реестре (например, устаревший путь к exe после переезда приложения)
-        if (settingsStore.Settings.StartWithWindows)
-            Services.AutoStart.SetEnabled(true);
+        if (settingsStore.HasUsableSettings) Services.AutoStart.SetEnabled(settingsStore.Settings.StartWithWindows);
 
         var dbPath = Path.Combine(SettingsStore.AppDataDirectory, "activity.db");
         services.AddSingleton(new SqliteConnectionFactory(dbPath));
@@ -63,7 +68,7 @@ public partial class App : Application
         _services = services.BuildServiceProvider();
 
         new MigrationRunner(_services.GetRequiredService<SqliteConnectionFactory>()).Run();
-        _services.GetRequiredService<TrackingService>().Start();
+        if (settingsStore.HasUsableSettings) _services.GetRequiredService<TrackingService>().Start();
 
         // Очистка по сроку хранения: первый прогон через 2 минуты (не тормозим старт),
         // дальше раз в сутки. RetentionDays = 0 внутри сервиса отключает очистку.
@@ -78,8 +83,15 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        _retentionTimer?.Dispose();
-        _services.GetRequiredService<TrackingService>().StopAsync().GetAwaiter().GetResult();
+        if (_retentionTimer is { } timer) timer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        if (_services is not null)
+        {
+            try { _services.GetRequiredService<TrackingService>().StopAsync().GetAwaiter().GetResult(); }
+            catch (Exception ex) { LogError(ex); }
+            (_services as IDisposable)?.Dispose();
+        }
+        if (_ownsInstance) _singleInstance?.ReleaseMutex();
+        _singleInstance?.Dispose();
         base.OnExit(e);
     }
 

@@ -6,13 +6,13 @@ public static class LocalDay
     public static (long StartUtcMs, long EndUtcMs) Bounds(DateTime localDate, TimeZoneInfo? timeZone = null)
     {
         var tz = timeZone ?? TimeZoneInfo.Local;
-        var dateOnly = localDate.Date;
+        var dateOnly = DateTime.SpecifyKind(localDate.Date, DateTimeKind.Unspecified);
         var start = TimeZoneInfo.ConvertTimeToUtc(dateOnly, tz);
         return (
             new DateTimeOffset(start).ToUnixTimeMilliseconds(),
-            new DateTimeOffset(start.AddDays(1)).ToUnixTimeMilliseconds());
+            new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(dateOnly.AddDays(1), tz)).ToUnixTimeMilliseconds());
     }
 
     public static (long StartUtcMs, long EndUtcMs) Today(TimeZoneInfo? timeZone = null) =>
-        Bounds(DateTimeOffset.Now.LocalDateTime, timeZone);
+        Bounds(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, timeZone ?? TimeZoneInfo.Local).DateTime, timeZone);
 }
